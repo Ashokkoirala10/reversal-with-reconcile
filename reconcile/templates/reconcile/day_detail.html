@@ -1,0 +1,142 @@
+{% extends "core/base.html" %}
+{% load core_extras %}
+{% block title %}Reconcile — {{ day|date:"d M Y" }}{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<div class="card accent-teal">
+    <div class="card-header-row">
+        <div>
+            <h2>{{ day|date:"l, d F Y" }}</h2>
+            <p class="muted" style="margin-top:-4px;">
+                {{ totals.total_transactions }} transaction(s) across {{ runs|length }} passed run{{ runs|length|pluralize }} that day.
+            </p>
+        </div>
+        <a class="btn btn-secondary btn-sm" href="{% url 'core:dashboard' %}#reconcile">&larr; Back to dashboard</a>
+    </div>
+
+    <div class="stat-grid">
+        <div class="stat"><div class="num">{{ totals.total_transactions }}</div><div class="label">Transactions scanned</div></div>
+        <div class="stat"><div class="num">{{ totals.grand_total_reconciled }}</div><div class="label">Reconciled</div></div>
+        <div class="stat stat-red"><div class="num">{{ totals.grand_total_outstanding }}</div><div class="label">Outstanding</div></div>
+        <div class="stat"><div class="num">{{ totals.need_reversal_count }}</div><div class="label">Need To Reversal</div></div>
+    </div>
+
+    <div class="section-label">By network</div>
+    <div class="stat-grid">
+        <div class="stat"><div class="num">{{ totals.sct_total }}</div><div class="label">SCT total</div></div>
+        <div class="stat"><div class="num">{{ totals.sct_reconciled }}</div><div class="label">SCT reconciled</div></div>
+        <div class="stat stat-red"><div class="num">{{ totals.sct_flagged }}</div><div class="label">SCT flagged</div></div>
+        <div class="stat"><div class="num">{{ totals.nchl_total }}</div><div class="label">NCHL total</div></div>
+        <div class="stat"><div class="num">{{ totals.nchl_reconciled }}</div><div class="label">NCHL reconciled</div></div>
+        <div class="stat stat-red"><div class="num">{{ totals.nchl_flagged }}</div><div class="label">NCHL flagged</div></div>
+        <div class="stat"><div class="num">{{ totals.khalti_total }}</div><div class="label">Khalti total</div></div>
+        <div class="stat"><div class="num">{{ totals.khalti_reconciled }}</div><div class="label">Khalti reconciled</div></div>
+        <div class="stat stat-red"><div class="num">{{ totals.khalti_flagged }}</div><div class="label">Khalti flagged</div></div>
+    </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+    <h3 style="margin-top:0;">Failed: On-Us vs Off-Us</h3>
+    <div class="split" style="grid-template-columns: 1fr 1fr;">
+        <div class="onus-block">
+            <div class="onus-head">
+                <span>On-Us</span>
+                <span>{{ totals.failed_onus_count }} rows &middot; Rs. {{ totals.failed_onus_amount|npr }}</span>
+            </div>
+            <table>
+                <thead><tr><th>Reason</th><th>Count</th></tr></thead>
+                <tbody>
+                {% for reason, count in totals.failed_reason_breakdown_onus.items %}
+                    <tr><td>{{ reason }}</td><td>{{ count }}</td></tr>
+                {% empty %}
+                    <tr><td colspan="2" class="muted">None</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="onus-block">
+            <div class="onus-head offus">
+                <span>Off-Us</span>
+                <span>{{ totals.failed_offus_count }} rows &middot; Rs. {{ totals.failed_offus_amount|npr }}</span>
+            </div>
+            <table>
+                <thead><tr><th>Reason</th><th>Count</th></tr></thead>
+                <tbody>
+                {% for reason, count in totals.failed_reason_breakdown_offus.items %}
+                    <tr><td>{{ reason }}</td><td>{{ count }}</td></tr>
+                {% empty %}
+                    <tr><td colspan="2" class="muted">None</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+    <h3 style="margin-top:0;">Success amount buckets</h3>
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr><th>Amount range</th><th>On-Us count</th><th>On-Us amount</th><th>Off-Us count</th><th>Off-Us amount</th><th>Total count</th><th>Total amount</th></tr>
+            </thead>
+            <tbody>
+            {% for b in buckets %}
+                <tr>
+                    <td><strong>{{ b.label }}</strong></td>
+                    <td>{{ b.onus_count }}</td>
+                    <td title="Rs. {{ b.onus_amount|floatformat:2 }}">Rs. {{ b.onus_amount|npr }}</td>
+                    <td>{{ b.offus_count }}</td>
+                    <td title="Rs. {{ b.offus_amount|floatformat:2 }}">Rs. {{ b.offus_amount|npr }}</td>
+                    <td>{{ b.total_count }}</td>
+                    <td title="Rs. {{ b.total_amount|floatformat:2 }}">Rs. {{ b.total_amount|npr }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+    <h3 style="margin-top:0;">Runs that make up this day</h3>
+    <div class="table-scroll">
+        <table>
+            <thead>
+            <tr>
+                <th>Time</th>
+                <th>Uploaded by</th>
+                <th>Uploaded file</th>
+                <th>Report</th>
+                <th>Reconciled / Outstanding</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for run in runs %}
+                <tr>
+                    <td><a href="{% url 'reconcile:result' run.id %}">{{ run.created_at|date:"H:i" }}</a></td>
+                    <td>{{ run.uploaded_by|default:"—" }}</td>
+                    <td>
+                        {% if run.transaction_file %}
+                            <a class="icon-btn" href="{% url 'reconcile:download_file' run.id 'uploaded' %}" title="{{ run.transaction_filename }}">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                            </a>
+                        {% else %}<span class="muted">—</span>{% endif %}
+                    </td>
+                    <td>
+                        <a class="icon-btn" href="{% url 'reconcile:download_file' run.id 'generated' %}" title="Generated report">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        </a>
+                        {% if run.bundle_zip %}
+                            <a class="icon-btn" href="{% url 'reconcile:download_file' run.id 'bundle' %}" title="Download all (transaction data + statements) as .zip">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v6M9 6h6M9 12h.01M9 15h.01M9 18h.01M13 12h2v6h-2z"/></svg>
+                            </a>
+                        {% endif %}
+                    </td>
+                    <td>{{ run.grand_total_reconciled }} / {{ run.grand_total_outstanding }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

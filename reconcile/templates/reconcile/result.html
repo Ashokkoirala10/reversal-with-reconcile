@@ -1,0 +1,182 @@
+{% extends "core/base.html" %}
+{% load core_extras %}
+{% block title %}Reconcile Result{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<div class="card accent-teal">
+    <h2>Reconciliation complete</h2>
+    <p class="muted" style="margin-top:-6px;">{{ run.transaction_filename }} &middot; {{ run.created_at|date:"Y-m-d H:i" }}</p>
+
+    {% if run.passed %}
+        <div class="info-box">
+            &#10003; Marked as <strong>passed</strong> by {{ run.passed_by }} on {{ run.passed_at|date:"Y-m-d H:i" }}.
+            It's now counted in the Reconcile Dashboard's analytics and visible in the Reconcile Audit Log.
+        </div>
+    {% else %}
+        <div class="info-box">
+            This run isn't counted in the Reconcile Dashboard yet. Review the report below, then mark it
+            passed to include it in the dashboard's totals, day-wise report, and amount-bucket report.
+        </div>
+    {% endif %}
+
+    <a class="btn" href="{% url 'reconcile:download_file' run.id 'generated' %}" style="display:inline-block; margin-bottom:12px;">Download report (.xlsx)</a>
+    {% if run.bundle_zip %}
+        <a class="btn btn-secondary" href="{% url 'reconcile:download_file' run.id 'bundle' %}" style="display:inline-block; margin-bottom:12px;">Download all — transaction data + statements (.zip)</a>
+    {% endif %}
+    {% if run.transaction_file %}
+        <a class="btn btn-secondary" href="{% url 'reconcile:download_file' run.id 'uploaded' %}" style="display:inline-block; margin-bottom:12px;">Download transaction file only</a>
+    {% endif %}
+    {% if can_toggle %}
+        <form method="post" action="{% url 'reconcile:toggle_passed' run.id %}" style="display:inline;">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{% url 'reconcile:result' run.id %}">
+            {% if run.passed %}
+                <button type="submit" class="btn btn-toggle-on">&#10003; Passed &mdash; unmark</button>
+            {% else %}
+                <button type="submit" class="btn" style="background:var(--green);">Mark as passed</button>
+            {% endif %}
+        </form>
+    {% endif %}
+
+    <div class="split3" style="margin-bottom:16px; margin-top:16px;">
+        <div class="field">
+            <h3>Grand total reconciled</h3>
+            <p style="font-size:22px; font-weight:700;">{{ run.grand_total_reconciled }}</p>
+        </div>
+        <div class="field">
+            <h3>Grand total outstanding</h3>
+            <p style="font-size:22px; font-weight:700;">{{ run.grand_total_outstanding }}</p>
+        </div>
+        <div class="field">
+            <h3>Need To Reversal rows</h3>
+            <p style="font-size:22px; font-weight:700;">{{ run.need_reversal_count }}</p>
+        </div>
+    </div>
+
+    <div class="split3">
+        <div class="field">
+            <h3>SCT Network</h3>
+            <table>
+                <tr><td>Total success</td><td>{{ run.sct_total }}</td></tr>
+                <tr><td>Reconciled</td><td>{{ run.sct_reconciled }}</td></tr>
+                <tr><td>Flagged</td><td>{{ run.sct_flagged }}</td></tr>
+                <tr><td>No statement</td><td>{{ run.sct_no_statement }}</td></tr>
+            </table>
+        </div>
+        <div class="field">
+            <h3>NCHL Network</h3>
+            <table>
+                <tr><td>Total success</td><td>{{ run.nchl_total }}</td></tr>
+                <tr><td>Reconciled</td><td>{{ run.nchl_reconciled }}</td></tr>
+                <tr><td>Flagged</td><td>{{ run.nchl_flagged }}</td></tr>
+            </table>
+        </div>
+        <div class="field">
+            <h3>Khalti Network</h3>
+            <table>
+                <tr><td>Total success</td><td>{{ run.khalti_total }}</td></tr>
+                <tr><td>Reconciled</td><td>{{ run.khalti_reconciled }}</td></tr>
+                <tr><td>Flagged</td><td>{{ run.khalti_flagged }}</td></tr>
+            </table>
+        </div>
+    </div>
+
+    <div class="split3" style="margin-top:16px;">
+        <div class="field">
+            <h3>Failed &rarr; Reversal Check</h3>
+            <table>
+                <tr><td>Total</td><td>{{ run.failed_total }}</td></tr>
+                <tr><td>Reconciled</td><td>{{ run.failed_reconciled }}</td></tr>
+                <tr><td>Pending</td><td>{{ run.failed_pending }}</td></tr>
+                <tr><td>Flagged</td><td>{{ run.failed_flagged }}</td></tr>
+            </table>
+        </div>
+        <div class="field">
+            <h3>Manual Reversal Check</h3>
+            <table>
+                <tr><td>Total</td><td>{{ run.manual_reversal_total }}</td></tr>
+                <tr><td>Reconciled</td><td>{{ run.manual_reversal_reconciled }}</td></tr>
+                <tr><td>Pending</td><td>{{ run.manual_reversal_pending }}</td></tr>
+                <tr><td>Flagged</td><td>{{ run.manual_reversal_flagged }}</td></tr>
+            </table>
+        </div>
+        <div class="field">
+            <h3>System Reversal Check</h3>
+            <table>
+                <tr><td>Total</td><td>{{ run.system_reversal_total }}</td></tr>
+                <tr><td>Reconciled</td><td>{{ run.system_reversal_reconciled }}</td></tr>
+                <tr><td>Flagged</td><td>{{ run.system_reversal_flagged }}</td></tr>
+            </table>
+        </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+        <h3 style="margin-top:0;">Failed: On-Us vs Off-Us</h3>
+        <div class="split" style="grid-template-columns: 1fr 1fr;">
+            <div class="onus-block">
+                <div class="onus-head">
+                    <span>On-Us</span>
+                    <span>{{ run.failed_onus_count }} rows &middot; Rs. {{ run.failed_onus_amount|npr }}</span>
+                </div>
+                <table>
+                    <thead><tr><th>Reason</th><th>Count</th></tr></thead>
+                    <tbody>
+                    {% for reason, count in run.failed_reason_breakdown_onus.items %}
+                        <tr><td>{{ reason }}</td><td>{{ count }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="2" class="muted">None</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="onus-block">
+                <div class="onus-head offus">
+                    <span>Off-Us</span>
+                    <span>{{ run.failed_offus_count }} rows &middot; Rs. {{ run.failed_offus_amount|npr }}</span>
+                </div>
+                <table>
+                    <thead><tr><th>Reason</th><th>Count</th></tr></thead>
+                    <tbody>
+                    {% for reason, count in run.failed_reason_breakdown_offus.items %}
+                        <tr><td>{{ reason }}</td><td>{{ count }}</td></tr>
+                    {% empty %}
+                        <tr><td colspan="2" class="muted">None</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+        <h3 style="margin-top:0;">Success amount buckets</h3>
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr><th>Amount range</th><th>On-Us count</th><th>On-Us amount</th><th>Off-Us count</th><th>Off-Us amount</th><th>Total count</th><th>Total amount</th></tr>
+                </thead>
+                <tbody>
+                {% for b in buckets %}
+                    <tr>
+                        <td><strong>{{ b.label }}</strong></td>
+                        <td>{{ b.onus_count }}</td>
+                        <td title="Rs. {{ b.onus_amount|floatformat:2 }}">Rs. {{ b.onus_amount|npr }}</td>
+                        <td>{{ b.offus_count }}</td>
+                        <td title="Rs. {{ b.offus_amount|floatformat:2 }}">Rs. {{ b.offus_amount|npr }}</td>
+                        <td>{{ b.total_count }}</td>
+                        <td title="Rs. {{ b.total_amount|floatformat:2 }}">Rs. {{ b.total_amount|npr }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="field" style="margin-top:16px;">
+        <h3>Statements</h3>
+        <p>{{ run.statements_uploaded|length }} uploaded &middot; {{ run.statements_missing|length }} missing</p>
+    </div>
+
+    <a class="btn btn-secondary" href="{% url 'reconcile:reconcile' %}" style="display:inline-block; margin-top:20px;">Run another reconciliation</a>
+</div>
+{% endblock %}

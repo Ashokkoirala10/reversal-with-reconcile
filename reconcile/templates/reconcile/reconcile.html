@@ -1,0 +1,229 @@
+{% extends "core/base.html" %}
+{% load reconcile_extras %}
+{% block title %}Reconcile{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<div class="reconcile-layout" id="reconcile-layout"><div class="split3" id="reconcile-split">
+    <div class="card panel-upload">
+        <h2>Reconcile</h2>
+
+
+        <div class="scroll-body">
+        {% if error %}
+            <div class="error-box">{{ error }}</div>
+        {% endif %}
+        {% if form.non_field_errors %}
+            <div class="error-box">{{ form.non_field_errors }}</div>
+        {% endif %}
+
+        <form method="post" enctype="multipart/form-data" id="reconcile-form">
+            {% csrf_token %}
+
+            <div class="field">
+                <label for="{{ form.transaction_file.id_for_label }}">{{ form.transaction_file.label }}</label>
+                {{ form.transaction_file }}
+                {% if form.transaction_file.errors %}<div class="error-box">{{ form.transaction_file.errors }}</div>{% endif %}
+            </div>
+
+            <div class="section-label" style="margin-top:18px;">Bank statements ({{ banks_available|length }})</div>
+            <div class="compact-file-list">
+                {% for bank in banks_available %}
+                    <div class="compact-file-row">
+                        <label for="id_statement_{{ bank.key }}">{{ bank.display_name }}</label>
+                        {{ form|dict_get:bank.key }}
+                    </div>
+                {% endfor %}
+            </div>
+
+            <details style="margin-top:14px;">
+                <summary class="muted" style="cursor:pointer; font-size:12.5px; font-weight:600;">
+                    Not yet available on the portal ({{ banks_pending|length }})
+                </summary>
+                <div class="compact-file-list" style="margin-top:8px;">
+                    {% for bank in banks_pending %}
+                        <div class="compact-file-row">
+                            <label for="id_statement_{{ bank.key }}">{{ bank.display_name }}</label>
+                            {{ form|dict_get:bank.key }}
+                        </div>
+                    {% endfor %}
+                </div>
+            </details>
+
+            <button type="submit" class="btn" id="reconcile-submit-btn" style="width:100%; margin-top:18px;">Reconcile</button>
+        </form>
+        </div>
+    </div>
+
+    <div class="card panel-shared">
+        <h2>Shared passed reports</h2>
+        <button type="button" class="activity-collapse-toggle" id="activity-collapse-toggle"
+                aria-label="Hide my activity" aria-expanded="true" title="Hide my activity">
+            <span class="collapse-line"></span><span class="collapse-arrow">&#10095;</span>
+        </button>
+
+        <div class="scroll-body">
+        <div class="table-scroll">
+        <table>
+            <thead>
+            <tr>
+                <th>Date</th>
+                <th>Username</th>
+                <th>Files</th>
+                <th>Reconc. / Outs.</th>
+                <th>Passed by</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for run in shared_page %}
+                <tr>
+                    <td><a href="{% url 'reconcile:result' run.id %}">{{ run.created_at|date:"Y-m-d H:i" }}</a></td>
+                    <td>{{ run.uploaded_by|default:"—" }}</td>
+                    <td>
+                        <span class="file-link-group file-link-group--nowrap">
+                        {% if run.transaction_file %}
+                            <a class="file-download-link" href="{% url 'reconcile:download_file' run.id 'uploaded' %}" title="Uploaded file: {{ run.transaction_filename }}">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                <span>U.F</span>
+                            </a>
+                        {% endif %}
+                        {% if run.bundle_zip %}
+                            <a class="file-download-link" href="{% url 'reconcile:download_file' run.id 'bundle' %}" title="Download all uploaded files and statements as .zip">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v6M9 6h6M9 12h.01M9 15h.01M9 18h.01M13 12h2v6h-2z"/></svg>
+                                <span>Zip</span>
+                            </a>
+                        {% endif %}
+                        <a class="file-download-link" href="{% url 'reconcile:download_file' run.id 'generated' %}" title="Generated Excel report">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                            <span>G.F</span>
+                        </a>
+                        </span>
+                    </td>
+                    <td>{{ run.grand_total_reconciled }} / {{ run.grand_total_outstanding }}</td>
+                    <td>{{ run.passed_by|default:"—" }}</td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="5" class="muted">No passed reports yet — mark one as passed from "My activity" &rarr;</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        </div>
+
+        <div class="pagination">
+            {% if shared_page.has_previous %}
+                <a href="?page={{ shared_page.previous_page_number }}#shared">&larr; Previous</a>
+            {% endif %}
+            <span class="muted">Page {{ shared_page.number }} of {{ shared_page.paginator.num_pages }}</span>
+            {% if shared_page.has_next %}
+                <a href="?page={{ shared_page.next_page_number }}#shared">Next &rarr;</a>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="card panel-mine">
+        <h2>My activity</h2>
+
+        <div class="scroll-body">
+        <div class="activity-list">
+        {% for run in mine_page %}
+            <div class="activity-box">
+                <div class="activity-box-head">
+                    <span class="activity-box-date">
+                        <a href="{% url 'reconcile:result' run.id %}">{{ run.created_at|date:"Y-m-d H:i" }}</a>
+                    </span>
+                    {% if run.passed %}
+                        <span class="badge badge-passed">&#10003; Passed</span>
+                    {% else %}
+                        <span class="badge badge-pending">Pending review</span>
+                    {% endif %}
+                </div>
+                <div class="activity-box-grid">
+                    <div class="activity-box-item">
+                        <div class="k">Files</div>
+                        <div class="v file-link-group">
+                            {% if run.transaction_file %}
+                                <a class="file-download-link" href="{% url 'reconcile:download_file' run.id 'uploaded' %}" title="{{ run.transaction_filename }}">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                    <span>Uploaded file</span>
+                                </a>
+                            {% endif %}
+                            <a class="file-download-link" href="{% url 'reconcile:download_file' run.id 'generated' %}" title="Generated Excel report">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                <span>Generated Excel</span>
+                            </a>
+                            {% if run.bundle_zip %}
+                                <a class="file-download-link" href="{% url 'reconcile:download_file' run.id 'bundle' %}" title="Download all uploaded files and statements as .zip">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v6M9 6h6M9 12h.01M9 15h.01M9 18h.01M13 12h2v6h-2z"/></svg>
+                                    <span>Zip</span>
+                                </a>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="activity-box-row">
+                        <div class="activity-box-item">
+                            <div class="k">Reconciled / Outstanding</div>
+                            <div class="v">{{ run.grand_total_reconciled }} / {{ run.grand_total_outstanding }}</div>
+                        </div>
+                        <div class="activity-box-item">
+                            <div class="k">Passed</div>
+                            <div class="v">
+                                <form method="post" action="{% url 'reconcile:toggle_passed' run.id %}">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="next" value="{{ request.get_full_path }}#mine">
+                                    {% if run.passed %}
+                                        <button type="submit" class="btn btn-sm btn-toggle-on">&#10003; Passed &mdash; unmark</button>
+                                    {% else %}
+                                        <button type="submit" class="btn btn-sm btn-secondary">Mark checked</button>
+                                    {% endif %}
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        {% empty %}
+            <p class="muted">You haven't run a reconciliation yet.</p>
+        {% endfor %}
+        </div>
+        </div>
+
+        <div class="pagination">
+            {% if mine_page.has_previous %}
+                <a href="?mypage={{ mine_page.previous_page_number }}#mine">&larr; Previous</a>
+            {% endif %}
+            <span class="muted">Page {{ mine_page.number }} of {{ mine_page.paginator.num_pages }}</span>
+            {% if mine_page.has_next %}
+                <a href="?mypage={{ mine_page.next_page_number }}#mine">Next &rarr;</a>
+            {% endif %}
+        </div>
+    </div>
+</div></div>
+
+<script>
+document.getElementById('reconcile-form').addEventListener('submit', function () {
+    var btn = document.getElementById('reconcile-submit-btn');
+    if (btn.disabled) { return false; }
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Reconciling\u2026';
+});
+</script>
+<script>
+(function () {
+    var layout = document.getElementById('reconcile-split');
+    var toggle = document.getElementById('activity-collapse-toggle');
+    if (!layout || !toggle) return;
+
+    function setCollapsed(collapsed) {
+        layout.classList.toggle('activity-collapsed', collapsed);
+        toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        toggle.setAttribute('aria-label', collapsed ? 'Show my activity' : 'Hide my activity');
+        toggle.setAttribute('title', collapsed ? 'Show my activity' : 'Hide my activity');
+        toggle.querySelector('.collapse-arrow').innerHTML = collapsed ? '&#10094;' : '&#10095;';
+    }
+
+    toggle.addEventListener('click', function () {
+        setCollapsed(!layout.classList.contains('activity-collapsed'));
+    });
+})();
+</script>
+{% endblock %}

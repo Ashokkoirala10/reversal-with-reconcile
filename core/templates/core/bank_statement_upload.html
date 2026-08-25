@@ -1,0 +1,468 @@
+{% extends "core/base.html" %}
+{% block content %}
+<div class="card" style="max-width:720px; margin:0 auto; max-height:100%; overflow-y:auto;">
+    <h2>Extra</h2>
+
+    <div class="extra-tabs">
+        <button type="button" class="extra-tab-btn active" data-extra-tab="check" onclick="showExtraTab('check')">Check bank statement</button>
+        {% if bank_form %}
+        <button type="button" class="extra-tab-btn" data-extra-tab="addbank" onclick="showExtraTab('addbank')">Add bank account</button>
+        {% endif %}
+        {% if create_user_form %}
+        <button type="button" class="extra-tab-btn" data-extra-tab="createuser" onclick="showExtraTab('createuser')">Make user</button>
+        {% endif %}
+        <button type="button" class="extra-tab-btn" data-extra-tab="verify" onclick="showExtraTab('verify')">Verification format</button>
+    </div>
+
+    <div id="extra-tab-check">
+    <div class="info-box">
+        You can upload a <strong>Global IME Bank</strong> statement, a <strong>Prabhu Bank</strong> statement
+        (up to 4 files, e.g. several daily exports), or <strong>both at once</strong> - whatever you provide is
+        combined into a single file automatically and checked together. 
+    </div>
+
+    <form method="post" enctype="multipart/form-data" id="statement-form">
+        {% csrf_token %}
+        <div class="field">
+            <label for="id_target_log">{{ form.target_log.label }}</label>
+            {{ form.target_log }}
+            {% if form.target_log.errors %}<div class="error-box">{{ form.target_log.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+            <label for="id_global_statement_files">{{ form.global_statement_files.label }}</label>
+            {{ form.global_statement_files }}
+            <div class="file-chip-list" id="global-chip-list"></div>
+            <p class="muted" style="font-size:12.5px; margin:6px 0 0;">{{ form.global_statement_files.help_text }}</p>
+            {% if form.global_statement_files.errors %}<div class="error-box">{{ form.global_statement_files.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+            <label for="id_prabhu_statement_files">{{ form.prabhu_statement_files.label }}</label>
+            {{ form.prabhu_statement_files }}
+            <div class="file-chip-list" id="prabhu-chip-list"></div>
+            <p class="muted" style="font-size:12.5px; margin:6px 0 0;">
+                {{ form.prabhu_statement_files.help_text }}
+               
+            </p>
+            {% if form.prabhu_statement_files.errors %}<div class="error-box">{{ form.prabhu_statement_files.errors }}</div>{% endif %}
+        </div>
+        <button type="submit" class="btn" id="statement-submit-btn" style="width:100%;">Check statement</button>
+    </form>
+    <p class="muted" style="font-size:12.5px; margin-top:16px; margin-bottom:0;">
+        Expected statement columns: <code>S.N, ENTRY TYPE, REMARKS, AMOUNT, DATE</code> (.csv or .xlsx).
+
+    </p>
+    </div>
+
+    {% if bank_form %}
+    <div id="extra-tab-addbank" style="display:none;">
+        <div class="info-box">
+            Add a new <strong>Debtor Bank &rarr; Debit Account</strong> mapping — used to fill in the
+            "Debit Account Number" column on reversal rows, and (when "Is own bank" is ticked) to decide
+            On-Us determination.
+        </div>
+
+        <form method="post" action="{% url 'core:add_bank_account' %}" id="add-bank-form">
+            {% csrf_token %}
+            <div class="field">
+                <label for="id_bank_name">{{ bank_form.bank_name.label }}</label>
+                {{ bank_form.bank_name }}
+                {% if bank_form.bank_name.errors %}<div class="error-box">{{ bank_form.bank_name.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_keyword">{{ bank_form.keyword.label }}</label>
+                {{ bank_form.keyword }}
+                <p class="muted" style="font-size:12.5px; margin:6px 0 0;">
+                    Upper-cased, case-insensitive substring matched against the "Debtor Bank" column,
+                    e.g. "NICASIA" matches "NIC Asia Bank". Keep it short and specific.
+                </p>
+                {% if bank_form.keyword.errors %}<div class="error-box">{{ bank_form.keyword.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_debit_account_number">{{ bank_form.debit_account_number.label }}</label>
+                {{ bank_form.debit_account_number }}
+                {% if bank_form.debit_account_number.errors %}<div class="error-box">{{ bank_form.debit_account_number.errors }}</div>{% endif %}
+            </div>
+            <div class="field" style="display:flex; align-items:center; gap:8px;">
+                {{ bank_form.is_own_bank }}
+                <label for="id_is_own_bank" style="margin:0;">{{ bank_form.is_own_bank.label }}</label>
+            </div>
+            <div class="field" style="display:flex; align-items:center; gap:8px;">
+                {{ bank_form.is_active }}
+                <label for="id_is_active" style="margin:0;">{{ bank_form.is_active.label }}</label>
+            </div>
+            <button type="submit" class="btn" style="width:100%;">Add bank account</button>
+        </form>
+
+        {% if bank_accounts %}
+        <h3 style="margin-top:22px; font-size:15px;">Currently configured bank accounts</h3>
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Bank name</th>
+                        <th>Keyword</th>
+                        <th>Debit account number</th>
+                        <th>Own bank</th>
+                        <th>Active</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for acc in bank_accounts %}
+                        <tr>
+                            <td>{{ acc.bank_name }}</td>
+                            <td>{{ acc.keyword }}</td>
+                            <td>{{ acc.debit_account_number }}</td>
+                            <td>{% if acc.is_own_bank %}Yes{% else %}—{% endif %}</td>
+                            <td>{% if acc.is_active %}Yes{% else %}No{% endif %}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if create_user_form %}
+    <div id="extra-tab-createuser" style="display:none;">
+        <div class="info-box">
+            Create a new login. Skips the group/permission editors from the Django admin — just the essentials.
+        </div>
+
+        <form method="post" action="{% url 'core:create_user' %}" id="create-user-form">
+            {% csrf_token %}
+            <div class="field">
+                <label for="id_username">{{ create_user_form.username.label }}</label>
+                {{ create_user_form.username }}
+                {% if create_user_form.username.errors %}<div class="error-box">{{ create_user_form.username.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_email">{{ create_user_form.email.label }}</label>
+                {{ create_user_form.email }}
+                {% if create_user_form.email.errors %}<div class="error-box">{{ create_user_form.email.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_password">{{ create_user_form.password.label }}</label>
+                {{ create_user_form.password }}
+                {% if create_user_form.password.errors %}<div class="error-box">{{ create_user_form.password.errors }}</div>{% endif %}
+            </div>
+            <div class="field" style="display:flex; align-items:center; gap:8px;">
+                {{ create_user_form.is_active }}
+                <label for="id_is_active" style="margin:0;">{{ create_user_form.is_active.label }}</label>
+            </div>
+            <div class="field" style="display:flex; align-items:center; gap:8px;">
+                {{ create_user_form.is_staff }}
+                <label for="id_is_staff" style="margin:0;">{{ create_user_form.is_staff.label }}</label>
+            </div>
+            <div class="field" style="display:flex; align-items:center; gap:8px;">
+                {{ create_user_form.is_superuser }}
+                <label for="id_is_superuser" style="margin:0;">{{ create_user_form.is_superuser.label }}</label>
+            </div>
+            <button type="submit" class="btn" id="create-user-submit-btn" style="width:100%;">Create user</button>
+        </form>
+
+        {% if all_users %}
+        <h3 style="margin-top:22px; font-size:15px;">Users</h3>
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>Email</th>
+                        <th>Active</th>
+                        <th>Staff</th>
+                        <th>Admin</th>
+                        <th>Joined</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in all_users %}
+                        <tr>
+                            <td>{{ u.username }}{% if u.id == request.user.id %} <span class="muted">(you)</span>{% endif %}</td>
+                            <td>{{ u.email|default:"—" }}</td>
+                            <td>{% if u.is_active %}Yes{% else %}No{% endif %}</td>
+                            <td>{% if u.is_staff %}Yes{% else %}—{% endif %}</td>
+                            <td>{% if u.is_superuser %}Yes{% else %}—{% endif %}</td>
+                            <td>{{ u.date_joined|date:"Y-m-d" }}</td>
+                            <td style="white-space:nowrap;">
+                                <div style="display:flex; gap:6px;">
+                                    <button type="button" class="btn btn-sm btn-secondary" onclick="openEditUserModal({{ u.id }})">Edit</button>
+                                    {% if u.id != request.user.id %}
+                                    <form method="post" action="{% url 'core:delete_user' u.id %}"
+                                          onsubmit="return confirm('Delete user {{ u.username|escapejs }}? This can\'t be undone.');"
+                                          style="margin:0;">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                    </form>
+                                    {% endif %}
+                                </div>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% for u in all_users %}
+        <div id="edit-user-modal-{{ u.id }}" class="download-modal-overlay" style="display:none;">
+            <div class="download-modal" style="text-align:left;">
+                <h3>Edit user</h3>
+                <form method="post" action="{% url 'core:update_user' u.id %}">
+                    {% csrf_token %}
+                    <div class="field">
+                        <label for="edit-username-{{ u.id }}">Username</label>
+                        <input type="text" name="username" id="edit-username-{{ u.id }}" value="{{ u.username }}" autocomplete="off">
+                    </div>
+                    <div class="field">
+                        <label for="edit-email-{{ u.id }}">Email</label>
+                        <input type="text" name="email" id="edit-email-{{ u.id }}" value="{{ u.email }}" placeholder="e.g. jdoe@example.com">
+                    </div>
+                    <div class="field">
+                        <label for="edit-password-{{ u.id }}">New password</label>
+                        <input type="password" name="password" id="edit-password-{{ u.id }}" autocomplete="new-password" placeholder="Leave blank to keep current password">
+                    </div>
+                    <div class="field" style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" name="is_active" id="edit-active-{{ u.id }}" {% if u.is_active %}checked{% endif %}>
+                        <label for="edit-active-{{ u.id }}" style="margin:0;">Active</label>
+                    </div>
+                    <div class="field" style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" name="is_staff" id="edit-staff-{{ u.id }}" {% if u.is_staff %}checked{% endif %}>
+                        <label for="edit-staff-{{ u.id }}" style="margin:0;">Staff</label>
+                    </div>
+                    <div class="field" style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" name="is_superuser" id="edit-admin-{{ u.id }}" {% if u.is_superuser %}checked{% endif %}>
+                        <label for="edit-admin-{{ u.id }}" style="margin:0;">Admin</label>
+                    </div>
+                    <button type="submit" class="btn" style="width:100%;">Save changes</button>
+                    <button type="button" class="btn btn-secondary" style="width:100%; margin-top:8px;" onclick="closeEditUserModal({{ u.id }})">Cancel</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <div id="extra-tab-verify" style="display:none;">
+        <div class="info-box">
+            Upload a <strong>dispute transaction</strong> file
+        </div>
+
+        <form method="post" action="{% url 'core:verification_format' %}" enctype="multipart/form-data" id="verify-form">
+            {% csrf_token %}
+            <div class="field">
+                <label for="id_dispute_file">{{ verification_form.dispute_file.label }}</label>
+                {{ verification_form.dispute_file }}
+                {% if verification_form.dispute_file.errors %}<div class="error-box">{{ verification_form.dispute_file.errors }}</div>{% endif %}
+            </div>
+            <button type="submit" class="btn" id="verify-submit-btn" style="width:100%;">Convert</button>
+        </form>
+    </div>
+</div>
+
+{% if verification_result %}
+<div id="download-modal-overlay" class="download-modal-overlay">
+    <div class="download-modal">
+        <h3>Conversion complete</h3>
+        <p>{{ verification_result.row_count }} row{{ verification_result.row_count|pluralize }} converted to the bank verification format.</p>
+        <a id="download-modal-link"
+           class="btn"
+           style="display:inline-block; text-decoration:none; text-align:center; width:100%;"
+           download="{{ verification_result.filename }}"
+           href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{{ verification_result.b64 }}">
+            Download {{ verification_result.filename }}
+        </a>
+        <button type="button" class="btn btn-secondary" style="width:100%; margin-top:8px;" onclick="closeDownloadModal()">Close</button>
+    </div>
+</div>
+{% endif %}
+
+{% if create_user_result %}
+<div id="create-user-modal-overlay" class="download-modal-overlay">
+    <div class="download-modal {% if create_user_result.success %}modal-success{% else %}modal-error{% endif %}">
+        {% if create_user_result.success %}
+            <h3>User created</h3>
+            <p>{{ create_user_result.message }}</p>
+        {% else %}
+            <h3>Couldn't create user</h3>
+            <ul class="modal-error-list">
+                {% for err in create_user_result.errors %}<li>{{ err }}</li>{% endfor %}
+            </ul>
+        {% endif %}
+        <button type="button" class="btn {% if create_user_result.success %}btn-success{% endif %}" style="width:100%;" onclick="closeCreateUserModal()">Close</button>
+    </div>
+</div>
+{% endif %}
+<style>
+/* This page is meant to fit on one screen — the whole document should
+   never scroll, only the card's own content area (if it ever grows
+   taller than the viewport, e.g. lots of validation errors + file
+   chips) scrolls internally instead. */
+html, body { height: 100%; overflow: hidden; }
+body { display: flex; flex-direction: column; }
+header { flex: 0 0 auto; }
+main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+.file-chip-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.file-chip-list:empty { margin-top:0; }
+.file-chip {
+    display:inline-flex; align-items:center; gap:6px;
+    background:#eef2ff; color:#3730a3; border:1px solid #c7d2fe;
+    border-radius:14px; padding:3px 6px 3px 10px; font-size:12.5px; line-height:1.6;
+}
+.file-chip button {
+    background:none; border:none; color:#3730a3; cursor:pointer;
+    font-size:15px; line-height:1; padding:0 4px; font-weight:bold;
+}
+.file-chip button:hover { color:#9c0006; }
+.extra-tabs { display:flex; gap:8px; margin-bottom:16px; border-bottom:1px solid #e5e7eb; }
+.extra-tab-btn {
+    background:none; border:none; cursor:pointer; padding:8px 14px;
+    font-size:14px; font-weight:600; color:#6b7280; border-bottom:2px solid transparent;
+}
+.extra-tab-btn.active { color:#1D4ED8; border-bottom-color:#1D4ED8; }
+.download-modal-overlay {
+    position:fixed; inset:0; background:rgba(15,23,42,0.55);
+    display:flex; align-items:center; justify-content:center; z-index:1000;
+}
+.download-modal {
+    background:#fff; border-radius:10px; padding:24px; width:90%; max-width:420px;
+    box-shadow:0 20px 50px rgba(0,0,0,0.25);
+}
+.download-modal h3 { margin:0 0 10px; color:#1D4ED8; }
+.download-modal p { margin:0 0 16px; color:#374151; font-size:14px; }
+.download-modal.modal-success h3 { color:#15803d; }
+.download-modal.modal-error h3 { color:#991b1b; }
+.modal-error-list { margin:0 0 16px; padding-left:20px; color:#991b1b; font-size:14px; }
+.modal-error-list li { margin-bottom:4px; }
+.btn-success { background:#16a34a; }
+.btn-success:hover { background:#15803d; }
+.btn-danger { background:white; color:#991b1b; border:1.5px solid #fca5a5; }
+.btn-danger:hover { background:#fef2f2; }
+</style>
+<script>
+document.getElementById('statement-form').addEventListener('submit', function () {
+    var btn = document.getElementById('statement-submit-btn');
+    if (btn.disabled) { return false; }
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Checking…';
+});
+
+document.getElementById('verify-form').addEventListener('submit', function () {
+    var btn = document.getElementById('verify-submit-btn');
+    if (btn.disabled) { return false; }
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Converting…';
+});
+
+var createUserForm = document.getElementById('create-user-form');
+if (createUserForm) {
+    createUserForm.addEventListener('submit', function () {
+        var btn = document.getElementById('create-user-submit-btn');
+        if (btn.disabled) { return false; }
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Creating…';
+    });
+}
+
+function showExtraTab(tab) {
+    var panels = {
+        check: document.getElementById('extra-tab-check'),
+        addbank: document.getElementById('extra-tab-addbank'),
+        createuser: document.getElementById('extra-tab-createuser'),
+        verify: document.getElementById('extra-tab-verify'),
+    };
+    Object.keys(panels).forEach(function (key) {
+        if (!panels[key]) { return; }
+        panels[key].style.display = (key === tab) ? '' : 'none';
+    });
+    document.querySelectorAll('.extra-tab-btn').forEach(function (btn) {
+        btn.classList.toggle('active', btn.getAttribute('data-extra-tab') === tab);
+    });
+}
+
+function closeDownloadModal() {
+    var overlay = document.getElementById('download-modal-overlay');
+    if (overlay) { overlay.remove(); }
+}
+
+function closeCreateUserModal() {
+    var overlay = document.getElementById('create-user-modal-overlay');
+    if (overlay) { overlay.remove(); }
+}
+
+function openEditUserModal(id) {
+    var modal = document.getElementById('edit-user-modal-' + id);
+    if (modal) { modal.style.display = 'flex'; }
+}
+
+function closeEditUserModal(id) {
+    var modal = document.getElementById('edit-user-modal-' + id);
+    if (modal) { modal.style.display = 'none'; }
+}
+
+{% if active_extra_tab %}
+showExtraTab('{{ active_extra_tab }}');
+{% endif %}
+
+// Lets the user build up a multi-file selection across several separate
+// "Choose files" clicks instead of each click wiping out the previous
+// pick (the default browser behaviour for <input type="file" multiple>,
+// which is the likely cause of "only one statement gets uploaded" when
+// people pick daily Prabhu exports one at a time rather than
+// ctrl/shift-clicking all of them in a single dialog).
+function setupAccumulatingFileInput(inputId, chipListId, maxFiles) {
+    var input = document.getElementById(inputId);
+    var chipList = document.getElementById(chipListId);
+    if (!input || !chipList) { return; }
+    var selected = [];
+
+    function render() {
+        chipList.innerHTML = '';
+        selected.forEach(function (file, idx) {
+            var chip = document.createElement('span');
+            chip.className = 'file-chip';
+            var label = document.createElement('span');
+            label.textContent = file.name;
+            chip.appendChild(label);
+            var removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.textContent = '\u00d7';
+            removeBtn.setAttribute('aria-label', 'Remove ' + file.name);
+            removeBtn.addEventListener('click', function () {
+                selected.splice(idx, 1);
+                sync();
+            });
+            chip.appendChild(removeBtn);
+            chipList.appendChild(chip);
+        });
+    }
+
+    function sync() {
+        if (typeof DataTransfer !== 'undefined') {
+            var dt = new DataTransfer();
+            selected.forEach(function (file) { dt.items.add(file); });
+            input.files = dt.files;
+        }
+        render();
+    }
+
+    input.addEventListener('change', function () {
+        var incoming = Array.prototype.slice.call(input.files || []);
+        incoming.forEach(function (file) {
+            var alreadyHave = selected.some(function (f) {
+                return f.name === file.name && f.size === file.size && f.lastModified === file.lastModified;
+            });
+            if (!alreadyHave) { selected.push(file); }
+        });
+        if (selected.length > maxFiles) {
+            selected = selected.slice(0, maxFiles);
+        }
+        sync();
+    });
+}
+
+setupAccumulatingFileInput('id_global_statement_files', 'global-chip-list', 1);
+setupAccumulatingFileInput('id_prabhu_statement_files', 'prabhu-chip-list', 4);
+</script>
+{% endblock %}
