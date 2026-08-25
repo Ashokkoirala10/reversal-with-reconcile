@@ -1,8 +1,114 @@
-# IBFT &rarr; Reversal Generator (Django)
+# IBFT Reversal & Reconcile (Django)
 
-A small Django web app that takes the daily `ibft-transaction_*.xlsx` export and
-produces a `need_to_reversal_*.xlsx` file, exactly like the manual process it
-replaces:
+One Django project (`reversal_project/`), two related apps sharing one
+login system and one "passed" review workflow:
+
+- **[`core`](#reversal-generator-core-app)** — takes the daily
+  `ibft-transaction_*.xlsx` export and produces a `need_to_reversal_*.xlsx`
+  file: which transactions need a manual reversal, grouped and formatted
+  exactly like the manual process it replaces.
+- **[`reconcile`](#reconcile-reconcile-app)** — a broader, from-scratch
+  reconciliation of the *same* kind of export against **every** bank
+  statement you have (up to 18 banks), producing a full SUCCESS / FAILED /
+  REVERSAL audit rather than just a reversal to-do list. No separate
+  reversal file needed — everything is derived from the transaction file
+  itself.
+
+For the deep-dive on exactly how each app's business rules and data models
+work internally, see [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md).
+This file is the practical "what does it do and how do I run it" version.
+
+## Setup
+
+```bash
+python -m venv venv
+source venv/bin/activate        # venv\Scripts\activate on Windows
+pip install -r requirements.txt
+
+python manage.py migrate        # also seeds the two hardcoded logins
+python manage.py runserver
+```
+
+Then open http://127.0.0.1:8000/ for the reversal generator, or
+http://127.0.0.1:8000/reconcile/ for Reconcile — same login for both. As
+`admin`, check http://127.0.0.1:8000/dashboard/ and
+http://127.0.0.1:8000/audit-log/ (each page embeds both apps' sections).
+
+## Login
+
+There is no self-registration — two hardcoded accounts are seeded by a data
+migration (`core/migrations/0003_seed_users.py`), shared by both apps:
+
+| Username        | Password    | Role                                             |
+|-----------------|-------------|---------------------------------------------------|
+| `ashok.koirala` | `ashok@123` | Regular operator — can upload/generate            |
+| `admin`         | `admin@123` | Admin — also sees the central Audit Log & Dashboard |
+
+Change these passwords (via `/admin/` or the Django shell) before using this
+anywhere beyond your own machine — they're intentionally simple/hardcoded
+per the current requirements.
+
+## Passed workflow (review before it's shared)
+
+Both apps use the same review gate. A newly generated file/run only shows
+up in **your own "My activity" list** — not the central shared list, and
+not the analytics dashboard — until you (or an admin) review it and click
+**"Mark as passed"** (on the result page, or right from the activity
+table). Once passed:
+
+- it moves into the central **"Shared passed reports"** list, visible to
+  everyone
+- it's included in the analytics dashboard
+- for the reversal app specifically, it also becomes the baseline the
+  *next* upload's double-reversal check compares against (see below)
+
+Anyone can unmark their own passed report; admins can mark/unmark anyone's.
+
+## Project layout
+
+```
+reversal_project/
+├── manage.py
+├── requirements.txt
+├── reversal_project/        # Django project settings/urls (mounts "/", "reconcile/", "admin/")
+├── core/                    # the reversal generator app
+│   ├── models.py            # ProcessingLog (audit trail)
+│   ├── forms.py              # upload form
+│   ├── services.py           # <-- all the business logic lives here
+│   ├── views.py
+│   ├── urls.py
+│   ├── admin.py
+│   └── templates/core/
+│       ├── base.html
+│       ├── login.html
+│       ├── upload.html
+│       ├── result.html
+│       ├── audit_log.html
+│       └── dashboard.html
+└── reconcile/                # the broader reconciliation app
+    ├── models.py              # ReconcileRun — one row per reconciliation run
+    ├── banks.py                # the 18-bank SCT network registry
+    ├── transactions.py         # reads the TransactionReport / ibft-transaction export
+    ├── statements.py           # reads bank statements — csv/xlsx/pdf, several shapes
+    ├── engine.py                 # the reconciliation engine (~970 lines)
+    ├── report.py                  # builds the downloadable .xlsx report
+    ├── dashboard.py                # dashboard aggregation + Excel exports
+    ├── forms.py
+    ├── views.py
+    ├── admin.py
+    ├── urls.py
+    └── templates/reconcile/
+        ├── reconcile.html        # upload form + shared/own activity panels
+        ├── result.html            # per-run result page
+        └── day_detail.html         # "click a day" rolled-up view
+```
+
+---
+
+## Reversal generator (`core` app)
+
+Produces a `need_to_reversal_*.xlsx` file from the daily
+`ibft-transaction_*.xlsx` export:
 
 - **failed** sheet: `FAILED` transactions, excluding "Insufficient funds"
 - **coop** sheet: manual-reversal transactions for every aggregator other
@@ -37,7 +143,7 @@ impossible going forward. If it ever happens again, please save the exact
 source value + what showed up in the generated file, so the real cause can
 be confirmed and fixed for good.
 
-## Bank statement upload (multiple files)
+### Bank statement upload (multiple files)
 
 The "Check against bank statement" page accepts one **Global IME Bank**
 statement and up to **3 Prabhu Bank** statement files (e.g. separate daily
@@ -50,46 +156,17 @@ common trap where a plain multi-file `<input>` silently drops everything
 except the most recent pick if files are selected one at a time across
 separate dialog opens.
 
-## Double-reversal prevention
+### Double-reversal prevention
 
 Before writing a new reversal file, the app looks at the **most recently
-generated file that has already been marked "passed"** (see below — not
-just any generated file) and collects every Network Reference Id that
-already appears in its `coop` / `imeremit` / `cityremit` sheets. Any row in
+generated file that has already been marked "passed"** (not just any
+generated file) and collects every Network Reference Id that already
+appears in its `coop` / `imeremit` / `cityremit` sheets. Any row in
 the new upload whose Network Reference Id is already in that set is skipped
 (and counted as `duplicate_skipped` in the audit log / result page / day
 reconciliation popup) instead of being reversed a second time.
 
-## Login
-
-There is no self-registration — two hardcoded accounts are seeded by a data
-migration (`core/migrations/0003_seed_users.py`):
-
-| Username        | Password    | Role                                             |
-|-----------------|-------------|---------------------------------------------------|
-| `ashok.koirala` | `ashok@123` | Regular operator — can upload/generate            |
-| `admin`         | `admin@123` | Admin — also sees the central Audit Log & Dashboard |
-
-Change these passwords (via `/admin/` or the Django shell) before using this
-anywhere beyond your own machine — they're intentionally simple/hardcoded
-per the current requirements.
-
-## Passed workflow (review before it's shared)
-
-A newly generated file only shows up in **your own "My activity" list** —
-not the central shared list, and not the analytics dashboard — until you
-(or an admin) review it and click **"Mark as passed"** (on the result page,
-or right from the activity table). Once passed:
-
-- it moves into the **"Shared passed reports"** central list, visible to
-  everyone
-- it's included in the analytics dashboard
-- it becomes the baseline the *next* upload's double-reversal check compares
-  against (see below)
-
-Anyone can unmark their own passed report; admins can mark/unmark anyone's.
-
-## UI
+### UI
 
 - **Generate page** (`/`): a 3-column layout — upload form on the left,
   the central **"Shared passed reports"** list in the middle (bigger, since
@@ -123,7 +200,7 @@ Anyone can unmark their own passed report; admins can mark/unmark anyone's.
   (`Onus Checked-System Reversal`) instead of only being counted, so it
   can still be reviewed.
 
-## On-Us verification (Prabhu + Global)
+### On-Us verification (Prabhu + Global)
 
 "On-Us" means the Debtor Bank and Creditor Bank are the *same* one of our
 own two banks — **Global-to-Global or Prabhu-to-Prabhu** (previously this
@@ -140,7 +217,7 @@ already successful?" check, matching how NCHL rows are verified:
   and red-flags it as already-reversed so nobody reverses it a second
   time. This mirrors the existing NCHL ref-id check on the same sheets.
 
-## File naming
+### File naming
 
 - Every uploaded source file is renamed/stored as `ibft_txn_data_<date>.xlsx`
   (date parsed from the original filename if it has one, otherwise today's
@@ -150,45 +227,7 @@ already successful?" check, matching how NCHL rows are verified:
   file actually stored on disk may have a suffix Django added to avoid a
   naming collision.
 
-## Setup
-
-```bash
-python -m venv venv
-source venv/bin/activate        # venv\Scripts\activate on Windows
-pip install -r requirements.txt
-
-python manage.py migrate        # also seeds the two hardcoded logins
-python manage.py runserver
-```
-
-Then open http://127.0.0.1:8000/, log in with either account above, upload
-a file, and (as `admin`) check http://127.0.0.1:8000/dashboard/ and
-http://127.0.0.1:8000/audit-log/.
-
-## Project layout
-
-```
-reversal_project/
-├── manage.py
-├── requirements.txt
-├── reversal_project/        # Django project settings/urls
-└── core/                    # the one app
-    ├── models.py            # ProcessingLog (audit trail)
-    ├── forms.py              # upload form
-    ├── services.py           # <-- all the business logic lives here
-    ├── views.py
-    ├── urls.py
-    ├── admin.py
-    └── templates/core/
-        ├── base.html
-        ├── login.html
-        ├── upload.html
-        ├── result.html
-        ├── audit_log.html
-        └── dashboard.html
-```
-
-## Notes / things worth knowing
+### Notes / things worth knowing
 
 - The app reads the source workbook's **"Transactions"** sheet (or the first
   sheet if that name isn't found) and auto-detects the header row, so a stray
@@ -214,3 +253,117 @@ reversal_project/
   asked for. If you skip a day (or need to check further back), the
   `extract_reversal_network_reference_ids()` helper in `core/services.py`
   can be pointed at any older generated file too.
+
+---
+
+## Reconcile (`reconcile` app)
+
+Takes the same kind of `TransactionReport` / `ibft-transaction_*.xlsx`
+export and reconciles **every** transaction in it — SUCCESS, FAILED, and
+REVERSAL alike — against your actual bank statements, producing a full
+audit rather than a to-do list. No separate reversal file is needed: FAILED
+rows, manual-reversal rows, and system-reversal rows are all identified
+directly from the transaction file, and the expected refund narration is
+synthesized the same way the reversal file itself builds it.
+
+### What it checks
+
+- **SCT Network** (cross-bank, Debtor != Creditor): CR on the debtor bank's
+  statement + DR on the creditor bank's statement, same Network Reference
+  Id. **On-Us** (Debtor == Creditor): a CR *and* DR both present on that
+  one bank's statement is enough — most on-us transfers never touch the
+  statement at all and are reconciled by default.
+- **NCHL / Khalti**: these settle through the issuing bank's own statement,
+  but the CR/DR legs don't share a Network Reference Id — matched instead
+  by beneficiary name + masked settlement account anchors (or a direct
+  reference-id-tagged settlement line, where present). A transaction that
+  settled and was **later reversed** is labeled "Settled then Reversed" and
+  still counted as reconciled — it's a legitimate, complete outcome, not a
+  problem.
+- **FAILED rows**: checked against the statement in case they actually
+  went through despite the FAILED status (flagged for review if so). If
+  there's no CR at all, it's a clean ordinary failure — nothing to do. If
+  there's a CR but the row is FAILED, it's treated exactly like a manual
+  reversal candidate (see below).
+- **Manual reversal rows** (and FAILED-but-credited rows): the debtor's
+  statement is searched for a DR whose remarks carry the expected refund
+  narration. Zero matches falls back to the same reversal/NCHL/Khalti
+  anchor checks used elsewhere, then "Pending" if still nothing; exactly
+  one match is reconciled; two or more is flagged as a **possible double
+  reversal**.
+- **System reversal rows**: checked with the same "did this actually
+  succeed anyway" logic as FAILED rows — flagged if the statement shows
+  the transaction had already completed successfully before the system
+  reversed it.
+- **Timeout rows**: never resolved to SUCCESS/FAILED/REVERSAL by the
+  switch, so there's nothing to check them against — listed on their own
+  sheet rather than silently dropped.
+
+Every SUCCESS row is also bucketed by amount range (Up to Rs. 5,000 /
+5k-10k / 10k-25k / 25k-50k / 50k-100k / above 100k), split On-Us/Off-Us —
+the same ranges the reversal app's own dashboard uses, so a monthly
+submission built from either app lines up with the other.
+
+### Bank statements — 18 banks, several export shapes
+
+The upload form accepts a statement per bank, from the 18-bank SCT network
+universe (`reconcile/banks.py`) — Global IME Bank and Prabhu Bank (our own
+issuer banks) plus 16 member banks. You can select more than one file per
+bank in one run (e.g. the 10 Aug **and** 11 Aug statement), since a
+transaction near midnight often only posts on the bank's next EOD run.
+
+Statement exports aren't all the same shape, and this is handled
+automatically per bank (`reconcile/statements.py`):
+
+- The common shape (S.N / ENTRY TYPE / REMARKS / AMOUNT / DATE) — read via
+  the same reader `core` already uses.
+- Rastriya Banijya Bank's WITHDRAW/DEPOSIT/DESCRIPTION column layout.
+- Garima Bikas Bank's MainCode/TranDate/Desc1-5/Type/Amount/TranId layout.
+- Agricultural Development Bank's (ADBL) raw core-banking ledger export —
+  as `.xlsx`, `.csv`, **or `.pdf`** (its tables are extracted page-by-page).
+
+A statement that fails to parse, comes back with fewer than 5 rows, or
+doesn't reference a single one of this run's own transactions anywhere in
+its remarks is treated as **unavailable for this run** (with a warning
+shown) rather than risking every one of its transactions being wrongly
+flagged — it lands on the "No Statement" sheet instead.
+
+### Report & dashboard
+
+Each run produces:
+- A downloadable **`.xlsx` report** (`report.py`) with a sheet per
+  category above, plus a combined **Need To Reversal** sheet listing every
+  reconciled/pending/flagged reversal candidate as one audit trail.
+- A **`.zip` bundle** of the transaction file plus every statement
+  uploaded alongside it, so the whole source-document set behind a report
+  is one download.
+
+The Reconcile dashboard is embedded on the same page as the Reversal one
+(`/dashboard/#reconcile`), filterable by date range, with:
+- Volume and by-network (SCT/NCHL/Khalti) totals
+- A Failed On-Us/Off-Us reason breakdown
+- A day-by-day breakdown (click a day for the full instant-result view,
+  same as a single run's own result page)
+- The success amount-range bucket report
+- Four Excel exports: bucket report, failed On-Us/Off-Us, day breakdown,
+  and a headline summary
+
+The Reconcile audit log is likewise embedded on the shared Audit Log page
+(`/audit-log/#reconcile-log`).
+
+### Notes / things worth knowing
+
+- Every matching decision delegates to `core.services` — the same,
+  already-tested functions the `core` app uses to check a
+  `need_to_reversal` file against a bank statement. `reconcile/engine.py`
+  is the *dispatch* layer (which check applies to which row), not a
+  reimplementation.
+- Internal settlement bookkeeping rows the switch logs for its own audit
+  trail (e.g. `KHALTI_SETTL/00000000PLR6`) are excluded from SCT stats —
+  they're not an independent transfer, just the payout leg of an
+  already-reconciled NCHL/Khalti transaction.
+- Network Reference Ids are isolated out of statement remarks using this
+  run's own known reference ids rather than a hardcoded id-length regex,
+  since different banks embed them differently (smooshed against account
+  numbers, joined with `|` instead of `/` or `:`) and the switch's id
+  format isn't guaranteed to stay the same length forever.
