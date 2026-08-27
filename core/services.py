@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import openpyxl
+import xlrd
 from openpyxl.styles import Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -884,6 +885,41 @@ class BankStatementIndex:
     total_rows: int = 0
 
 
+def _load_excel_rows(path: Path) -> list[list]:
+    """Read an Excel file's first sheet into a list of row-value lists,
+    regardless of whether it's the modern OOXML .xlsx/.xlsm format
+    (openpyxl) or a legacy pre-2007 Excel Binary .xls export (xlrd is the
+    only maintained library that still reads that format — some banks,
+    e.g. ADBL, still send statements in it)."""
+    suffix = path.suffix.lower()
+    if suffix == ".xls":
+        try:
+            wb = xlrd.open_workbook(str(path))
+        except Exception as exc:
+            raise ProcessingError(
+                f"Could not open '{path.name}' as an Excel file (.xls) — {exc}. "
+                "Please upload the original bank statement export."
+            ) from exc
+        ws = wb.sheet_by_index(0)
+        return [
+            [ws.cell_value(r, c) if ws.cell_value(r, c) != "" else None for c in range(ws.ncols)]
+            for r in range(ws.nrows)
+        ]
+
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    except Exception as exc:
+        raise ProcessingError(
+            f"Could not open '{path.name}' as an Excel file (.xlsx) — {exc}. "
+            "Please upload the original bank statement export in .csv, .xls, or .xlsx format."
+        ) from exc
+    try:
+        ws = wb[wb.sheetnames[0]]
+        return [list(r) for r in ws.iter_rows(values_only=True)]
+    finally:
+        wb.close()
+
+
 def _read_bank_statement_rows(path: str | Path, source: str = "") -> list[dict]:
     """Read a bank statement export (.csv or .xlsx) into a list of dicts
     with keys entry_type / remarks / amount / date / source. Column names
@@ -942,45 +978,41 @@ def _read_bank_statement_rows(path: str | Path, source: str = "") -> list[dict]:
                     }
                 )
     else:
-        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-        try:
-            ws = wb[wb.sheetnames[0]]
-            header = None
-            entry_idx = remarks_idx = amount_idx = date_idx = source_idx = None
-            for raw in ws.iter_rows(values_only=True):
-                if header is None:
-                    names = _normalize_headers(raw)
-                    if "ENTRY TYPE" in names and "REMARKS" in names:
-                        header = names
-                        entry_idx = header.index("ENTRY TYPE")
-                        remarks_idx = header.index("REMARKS")
-                        amount_idx = header.index("AMOUNT") if "AMOUNT" in header else None
-                        date_idx = header.index("DATE") if "DATE" in header else None
-                        source_idx = header.index("SOURCE") if "SOURCE" in header else None
-                    continue
-                if raw is None or all(v is None for v in raw):
-                    continue
-                row_source = (
-                    str(raw[source_idx]).strip().lower()
-                    if source_idx is not None and source_idx < len(raw) and raw[source_idx]
-                    else source
-                )
-                rows.append(
-                    {
-                        "entry_type": str(raw[entry_idx]).strip() if entry_idx < len(raw) and raw[entry_idx] is not None else "",
-                        "remarks": str(raw[remarks_idx]).strip() if remarks_idx < len(raw) and raw[remarks_idx] is not None else "",
-                        "amount": raw[amount_idx] if amount_idx is not None and amount_idx < len(raw) else None,
-                        "date": raw[date_idx] if date_idx is not None and date_idx < len(raw) else None,
-                        "source": row_source,
-                    }
-                )
+        all_rows = _load_excel_rows(path)
+        header = None
+        entry_idx = remarks_idx = amount_idx = date_idx = source_idx = None
+        for raw in all_rows:
             if header is None:
-                raise ProcessingError(
-                    "Could not find the bank statement header row (expected "
-                    "columns including 'ENTRY TYPE' and 'REMARKS')."
-                )
-        finally:
-            wb.close()
+                names = _normalize_headers(raw)
+                if "ENTRY TYPE" in names and "REMARKS" in names:
+                    header = names
+                    entry_idx = header.index("ENTRY TYPE")
+                    remarks_idx = header.index("REMARKS")
+                    amount_idx = header.index("AMOUNT") if "AMOUNT" in header else None
+                    date_idx = header.index("DATE") if "DATE" in header else None
+                    source_idx = header.index("SOURCE") if "SOURCE" in header else None
+                continue
+            if raw is None or all(v is None for v in raw):
+                continue
+            row_source = (
+                str(raw[source_idx]).strip().lower()
+                if source_idx is not None and source_idx < len(raw) and raw[source_idx]
+                else source
+            )
+            rows.append(
+                {
+                    "entry_type": str(raw[entry_idx]).strip() if entry_idx < len(raw) and raw[entry_idx] is not None else "",
+                    "remarks": str(raw[remarks_idx]).strip() if remarks_idx < len(raw) and raw[remarks_idx] is not None else "",
+                    "amount": raw[amount_idx] if amount_idx is not None and amount_idx < len(raw) else None,
+                    "date": raw[date_idx] if date_idx is not None and date_idx < len(raw) else None,
+                    "source": row_source,
+                }
+            )
+        if header is None:
+            raise ProcessingError(
+                "Could not find the bank statement header row (expected "
+                "columns including 'ENTRY TYPE' and 'REMARKS')."
+            )
 
     return rows
 
@@ -1157,7 +1189,9 @@ def has_duplicate_dr(index: BankStatementIndex, ref_id: Any, source: str = "") -
     return dr_count >= 2
 
 
-def is_already_reversed(index: BankStatementIndex, ref_id: Any, source: str = "") -> bool:
+def is_already_reversed(
+    index: BankStatementIndex, ref_id: Any, source: str = "", expected_amount: float | None = None
+) -> bool:
     """A manual-reversal row's Network Reference Id should show up as a CR
     entry in the bank statement (the original credit into the parking
     account). That CR entry's REMARKS ends with the switch's own ISO id
@@ -1173,7 +1207,14 @@ def is_already_reversed(index: BankStatementIndex, ref_id: Any, source: str = ""
     bank only — see statement_entries_for_reference(). The secondary
     ISO-id chase (to find the matching DR) is left unrestricted since a
     reversal's own DR entry lives in the same bank's statement as its CR
-    counterpart by construction."""
+    counterpart by construction.
+
+    `expected_amount`, when given, additionally requires the matched DR
+    entry's own AMOUNT to be within a paisa of it — used by the reconcile
+    app's reversal checks (see reconcile/engine.py) to make sure the
+    ISO-id chase isn't just the right id with a *different* payment's
+    amount. Left as None (no amount check at all) for every other caller
+    of this function, whose existing behavior is unchanged."""
     entries = statement_entries_for_reference(index, ref_id, source)
     for entry in entries:
         if (entry["entry_type"] or "").strip().upper() != "CR":
@@ -1187,16 +1228,29 @@ def is_already_reversed(index: BankStatementIndex, ref_id: Any, source: str = ""
         # Network Reference Id is — look it up directly rather than only
         # checking other rows' *trailing* ISO id.
         for candidate in index.by_token.get(iso_id, []):
-            if (candidate["entry_type"] or "").strip().upper() == "DR":
-                return True
+            if (candidate["entry_type"] or "").strip().upper() != "DR":
+                continue
+            if expected_amount is not None and abs(to_float(candidate.get("amount")) - expected_amount) > 0.01:
+                continue
+            return True
     return False
 
 
 _STATEMENT_ACCOUNT_TOKEN_RE = re.compile(r"0{5,}[A-Z0-9]{2,}")
 
 
-def is_already_debited_nchl(index: BankStatementIndex, ref_id: Any, source: str = "") -> bool:
+def is_already_debited_nchl(
+    index: BankStatementIndex, ref_id: Any, source: str = "", expected_amount: float | None = None
+) -> bool:
     """NCHL-specific "already handled" check.
+
+    `expected_amount`, when given, additionally requires the matched DR
+    entry's own AMOUNT to be within a paisa of it — used by the
+    reconcile app's SUCCESS-row check (see reconcile/engine.py) to make
+    sure the anchor match isn't just the right name/account with a
+    *different* payment's amount. Left as None (no amount check at all)
+    for every other caller of this function, whose existing behavior is
+    unchanged.
 
     For most networks, a reversal's DR entry carries the *original* CR
     entry's own trailing ISO id somewhere in its REMARKS, so
@@ -1286,11 +1340,16 @@ def is_already_debited_nchl(index: BankStatementIndex, ref_id: Any, source: str 
                 if reversed_back:
                     continue
 
+            if expected_amount is not None and abs(to_float(candidate.get("amount")) - expected_amount) > 0.01:
+                continue
+
             return True
     return False
 
 
-def is_already_debited_khalti(index: BankStatementIndex, ref_id: Any, source: str = "") -> bool:
+def is_already_debited_khalti(
+    index: BankStatementIndex, ref_id: Any, source: str = "", expected_amount: float | None = None
+) -> bool:
     """Khalti-specific "already handled" check — a sibling of
     is_already_debited_nchl() above, for the same reason: Khalti's own
     settlement DR leg doesn't carry the original CR's trailing ISO id (so
@@ -1314,6 +1373,10 @@ def is_already_debited_khalti(index: BankStatementIndex, ref_id: Any, source: st
     the statement, Khalti reversed its own settlement debit back out, so
     this isn't a terminal "already debited" state and the row must still
     go through the normal manual reversal.
+
+    `expected_amount`, when given, additionally requires the matched DR
+    entry's own AMOUNT to be within a paisa of it — see
+    is_already_debited_nchl()'s own note on this parameter above.
     """
     entries = statement_entries_for_reference(index, ref_id, source)
     for entry in entries:
@@ -1345,6 +1408,9 @@ def is_already_debited_khalti(index: BankStatementIndex, ref_id: Any, source: st
                 )
                 if reversed_back:
                     continue
+
+            if expected_amount is not None and abs(to_float(candidate.get("amount")) - expected_amount) > 0.01:
+                continue
 
             return True
     return False
@@ -1960,12 +2026,55 @@ VERIFICATION_FORMAT_COLUMNS = [
 # Name) get the same yellow header highlight used on the reversal sheets.
 VERIFICATION_HIGHLIGHTED_TRAILING_COLUMNS = 3
 
+# Content-ID the verification email's HTML body references (as
+# cid:<this>) for the sct-signature banner image — the caller
+# (core/views.py:verification_send_mail_view) attaches
+# core/static/core/img/mail-signature.png inline under this same id.
+MAIL_SIGNATURE_IMAGE_CID = "sct-signature-banner"
 
-def build_verification_format(file_stream) -> tuple[Any, int]:
+
+def build_verification_workbook(rows_out: list[list[Any]]):
+    """Build one 13-column bank-verification workbook from already-mapped
+    row value-lists (VERIFICATION_FORMAT_COLUMNS order). Shared by
+    build_verification_format() (the full file) and
+    group_verification_rows_by_bank() callers (one bank's rows at a time)."""
+    wb_out = openpyxl.Workbook()
+    ws_out = wb_out.active
+    ws_out.title = "Transactions"
+    ws_out.append(VERIFICATION_FORMAT_COLUMNS)
+    _style_header_row(
+        ws_out, 1, len(VERIFICATION_FORMAT_COLUMNS), highlight_trailing=VERIFICATION_HIGHLIGHTED_TRAILING_COLUMNS
+    )
+
+    for i, values in enumerate(rows_out, start=1):
+        values = list(values)
+        values[0] = i  # re-serialize S NO within this workbook
+        ws_out.append(values)
+        _style_data_row(ws_out, ws_out.max_row)
+        _apply_id_text_format(ws_out, ws_out.max_row, VERIFICATION_FORMAT_COLUMNS)
+
+    _autofit(ws_out)
+    return wb_out
+
+
+def build_verification_format(file_stream) -> tuple[Any, int, list[list[Any]], int]:
     """Read a dispute-transaction export from `file_stream` (any
     file-like/bytes object openpyxl can load — no path, nothing saved to
-    disk) and return (workbook, row_count) in the bank-verification format.
-    Raises ProcessingError if the file doesn't look like a valid export."""
+    disk) and return (workbook, row_count, rows_out, skipped_count) in the
+    bank-verification format, where rows_out is the list of row
+    value-lists actually written (VERIFICATION_FORMAT_COLUMNS order) —
+    handed back so the caller can group them by Creditor Bank without
+    re-reading the source file.
+
+    Only rows whose "Debit Status" is SUCCESS *and* whose "Credit Status"
+    is FAILED or TIMEOUT are kept — that's the only combination actually
+    worth asking a bank about: if the debit (source) side didn't succeed,
+    nothing left our side to begin with, and if the credit side already
+    shows SUCCESS, it's already confirmed credited — nothing to verify
+    either way. skipped_count is how many rows got dropped for either
+    reason, for the caller to surface to the user. Raises ProcessingError
+    if the file doesn't look like a valid export, or if every row gets
+    skipped."""
     wb_in = openpyxl.load_workbook(file_stream, data_only=True, read_only=True)
     try:
         ws_in = None
@@ -1989,25 +2098,203 @@ def build_verification_format(file_stream) -> tuple[Any, int]:
     if not rows:
         raise ProcessingError("The uploaded file has no transaction rows.")
 
-    wb_out = openpyxl.Workbook()
-    ws_out = wb_out.active
-    ws_out.title = "Transactions"
-    ws_out.append(VERIFICATION_FORMAT_COLUMNS)
-    _style_header_row(
-        ws_out, 1, len(VERIFICATION_FORMAT_COLUMNS), highlight_trailing=VERIFICATION_HIGHLIGHTED_TRAILING_COLUMNS
-    )
+    debit_status_idx = col_map["Debit Status"]
+    credit_status_idx = col_map["Credit Status"]
+    rows_out = []
+    skipped_count = 0
+    for row in rows:
+        debit_status = str(row[debit_status_idx]).strip().upper() if row[debit_status_idx] is not None else ""
+        credit_status = str(row[credit_status_idx]).strip().upper() if row[credit_status_idx] is not None else ""
+        if debit_status != "SUCCESS" or credit_status not in ("FAILED", "TIMEOUT"):
+            skipped_count += 1
+            continue
+        rows_out.append([row[col_map[name]] for name in VERIFICATION_FORMAT_COLUMNS])
 
-    for i, row in enumerate(rows, start=1):
-        values = [row[col_map[name]] for name in VERIFICATION_FORMAT_COLUMNS]
-        values[0] = i  # re-serialize S NO
-        ws_out.append(values)
-        _style_data_row(ws_out, ws_out.max_row)
-        _apply_id_text_format(ws_out, ws_out.max_row, VERIFICATION_FORMAT_COLUMNS)
+    if not rows_out:
+        raise ProcessingError(
+            f"None of the {len(rows)} row(s) in this file have a Debit Status of SUCCESS with a "
+            "Credit Status of FAILED or TIMEOUT — nothing to send to the bank for verification."
+        )
 
-    _autofit(ws_out)
-    return wb_out, len(rows)
+    wb_out = build_verification_workbook(rows_out)
+    return wb_out, len(rows_out), rows_out, skipped_count
 
 
 def build_verification_output_filename(source_filename: str) -> str:
     """verification_format_<date>.xlsx"""
     return f"verification_format_{_extract_date_str(source_filename)}.xlsx"
+
+
+def group_verification_rows_by_bank(rows_out: list[list[Any]]) -> list[dict[str, Any]]:
+    """Group already-converted verification rows by their "Creditor Bank"
+    column (the beneficiary bank — who actually needs to confirm the
+    credit), preserving first-seen order. Each group is matched (by
+    case-insensitive Keyword substring) against the active
+    core.models.VerificationBankContact rows, so the "Extra" page can offer
+    a one-click "Send mail" per bank without the caller needing to know
+    the contact list itself.
+
+    Returns a list of {"bank_name": str, "rows": [...], "contact": obj|None}
+    dicts, one per distinct Creditor Bank value found in rows_out."""
+    from .models import VerificationBankContact  # lazy: services.py stays importable without Django set up
+
+    contacts = list(VerificationBankContact.objects.filter(is_active=True))
+    creditor_idx = VERIFICATION_FORMAT_COLUMNS.index("Creditor Bank")
+
+    order: list[str] = []
+    buckets: dict[str, dict[str, Any]] = {}
+    for row in rows_out:
+        raw_name = str(row[creditor_idx]).strip() if row[creditor_idx] is not None else ""
+        display_name = raw_name or "Unknown bank"
+        key = display_name.upper()
+        if key not in buckets:
+            buckets[key] = {"bank_name": display_name, "rows": []}
+            order.append(key)
+        buckets[key]["rows"].append(row)
+
+    groups = []
+    for key in order:
+        bucket = buckets[key]
+        contact = next((c for c in contacts if c.keyword and c.keyword in key), None)
+        groups.append({"bank_name": bucket["bank_name"], "rows": bucket["rows"], "contact": contact})
+    return groups
+
+
+def build_verification_bank_filename(bank_name: str, source_filename: str) -> str:
+    """verification_<bank>_<date>.xlsx"""
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", bank_name).strip("_") or "bank"
+    return f"verification_{safe}_{_extract_date_str(source_filename)}.xlsx"
+
+
+def resolve_mail_signature(fallback_name: str = "") -> dict[str, str]:
+    """Who/what to sign an outgoing verification email with: every field
+    (name/title/mobile/company/address/toll_free/website) comes from the
+    most recently updated active core.models.MailSignature row, if one
+    exists (see that model's docstring — this is what lets this be changed
+    from the app itself, not a code/deploy change) — any field left blank
+    on that row falls back to the matching MAIL_SIGNATURE_* settings/.env
+    default. With no active row at all, every field falls back to that
+    settings/.env default, with `fallback_name` (typically the logged-in
+    user's own name) used for name only if MAIL_SIGNATURE_NAME is also
+    unset."""
+    from django.conf import settings  # lazy: services.py stays importable without Django set up
+    from .models import MailSignature
+
+    defaults = {
+        "name": getattr(settings, "MAIL_SIGNATURE_NAME", "") or fallback_name or "",
+        "title": getattr(settings, "MAIL_SIGNATURE_TITLE", "") or "",
+        "mobile": getattr(settings, "MAIL_SIGNATURE_PHONE", "") or "",
+        "company": getattr(settings, "MAIL_SIGNATURE_COMPANY", "") or "",
+        "address": getattr(settings, "MAIL_SIGNATURE_ADDRESS", "") or "",
+        "toll_free": getattr(settings, "MAIL_SIGNATURE_TOLL_FREE", "") or "",
+        "website": getattr(settings, "MAIL_SIGNATURE_WEBSITE", "") or "",
+    }
+
+    active = MailSignature.objects.filter(is_active=True).order_by("-updated_at").first()
+    if not active:
+        return defaults
+
+    return {
+        "name": active.name or (getattr(settings, "MAIL_SIGNATURE_NAME", "") or fallback_name or ""),
+        "title": active.title or defaults["title"],
+        "mobile": active.mobile or defaults["mobile"],
+        "company": active.company or defaults["company"],
+        "address": active.address or defaults["address"],
+        "toll_free": active.toll_free or defaults["toll_free"],
+        "website": active.website or defaults["website"],
+    }
+
+
+def build_verification_email(
+    bank_name: str, rows_out: list[list[Any]], fallback_sender_name: str = ""
+) -> tuple[str, str, str]:
+    """Build (subject, html_body, text_body) for one bank's verification
+    email — an HTML table mirroring the sheet (same yellow-highlighted
+    trailing columns) plus the "please help us verify..." wording this
+    used to be sent with by hand, signed via resolve_mail_signature() (name
+    optional, e.g. for a shared mailbox; company/address/toll-free/website
+    each individually overridable there too). The workbook itself is
+    attached separately by the caller."""
+
+    today = date.today().strftime("%Y-%m-%d")
+    subject = f"Transaction Verification Request - {bank_name} - {today}"
+
+    highlight_from = len(VERIFICATION_FORMAT_COLUMNS) - VERIFICATION_HIGHLIGHTED_TRAILING_COLUMNS
+
+    header_cells = "".join(
+        f'<th style="border:1px solid #999;padding:4px 8px;background:{"#ffff00" if i >= highlight_from else "#f2f2f2"};">{name}</th>'
+        for i, name in enumerate(VERIFICATION_FORMAT_COLUMNS)
+    )
+    body_rows = []
+    for i, values in enumerate(rows_out, start=1):
+        cells = "".join(
+            f'<td style="border:1px solid #999;padding:4px 8px;">{"" if v is None else v}</td>'
+            for v in ([i] + list(values)[1:])
+        )
+        body_rows.append(f"<tr>{cells}</tr>")
+    table_html = (
+        '<table style="border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:12.5px;">'
+        f"<thead><tr>{header_cells}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
+    )
+
+    signature = resolve_mail_signature(fallback_sender_name)
+    name = signature["name"]
+    title = signature["title"]
+    phone = signature["mobile"]
+    company = signature["company"]
+    address = signature["address"]
+    toll_free = signature["toll_free"]
+    website = signature["website"]
+    toll_free_line = " ; ".join(part for part in [f"Toll Free: {toll_free}" if toll_free else "", website] if part)
+
+    # Plain-text version — no markup at all.
+    text_signature_lines = [
+        "Regards,",
+        name,
+        title,
+        f"Mobile: {phone}" if phone else "",
+        company,
+        address,
+        toll_free_line,
+    ]
+    text_signature_lines = [line for line in text_signature_lines if line]
+
+    # HTML version — name and title bolded, matching the hand-sent emails
+    # this replaces; the sct-signature banner (MAIL_SIGNATURE_IMAGE_CID,
+    # attached inline by the caller) is appended below the toll-free line.
+    html_signature_lines = [
+        "Regards,",
+        f"<strong>{name}</strong>" if name else "",
+        f"<strong>{title}</strong>" if title else "",
+        f"Mobile: {phone}" if phone else "",
+        company,
+        address,
+        toll_free_line,
+    ]
+    html_signature_lines = [line for line in html_signature_lines if line]
+    signature_html = "<br>".join(html_signature_lines)
+    signature_html += (
+        f'<br><br><img src="cid:{MAIL_SIGNATURE_IMAGE_CID}" alt="Smart Choice Technologies Ltd." style="max-width:360px;">'
+    )
+
+    html_body = (
+        "<p>Dear Team,</p>"
+        "<p>Please help us to verify the following transaction(s) whether the amount has been credited "
+        "in the mentioned beneficiary account or not, in the mentioned date and time.</p>"
+        f"{table_html}"
+        f"<p>{signature_html}</p>"
+    )
+
+    text_lines = [
+        "Dear Team,",
+        "",
+        "Please help us to verify the following transaction(s) whether the amount has been credited "
+        "in the mentioned beneficiary account or not, in the mentioned date and time.",
+        "",
+        "(See attached file for the transaction details.)",
+        "",
+        *text_signature_lines,
+    ]
+    text_body = "\n".join(text_lines)
+
+    return subject, html_body, text_body

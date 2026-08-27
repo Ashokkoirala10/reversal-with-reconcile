@@ -149,6 +149,19 @@ and a `.zip` bundling the transaction file + every statement uploaded
 alongside it (`bundle_zip`) so the whole source-document set is a single
 download.
 
+**`warnings`** (`JSONField`, list of strings) — every non-fatal issue
+`write_combined_statement_csv()` raised while reading this run's
+statements (a bank's file failed to parse, came back suspiciously thin,
+or matched none of this run's own reference ids — see §8). A bank listed
+here still lands in `statements_missing` and every one of its
+transactions on the "No Statement" sheet even though a file *was*
+uploaded for it; this field is what actually explains why, and is
+rendered on the result page, the "My activity" card (a "⚠ N warnings"
+badge), and the Statements section (which names the actual banks used/
+missing, not just counts) — previously this reasoning only existed
+inside the generated `.xlsx`'s own Warnings sheet, invisible anywhere on
+the site itself.
+
 ---
 
 ## 4. `core` app — Reversal generation
@@ -389,10 +402,32 @@ shape `core` expects:
 - A "withdraw/deposit" two-column shape (`_is_withdraw_deposit_shape()`)
   some banks export instead of a single signed entry-type column.
 - Garima Bikas Bank's own layout (`_garima_statement_rows()`).
-- **ADBL exports as a PDF**, not a spreadsheet — `_adbl_statement_rows()`
-  extracts per-page tables via `pdfplumber` (`_pdf_table_rows()`), whose
-  header doesn't repeat on later pages, so the header from page 1 is
-  reused for every subsequent page's rows.
+- **ADBL** (`_adbl_statement_rows()`) accepts all four of `.xlsx`, legacy
+  `.xls`, `.csv`, or `.pdf` — in practice ADBL sends a genuine `.xlsx` as
+  often as a pre-2007 Excel Binary `.xls` (same OLE2/BIFF format
+  `openpyxl` cannot open at all — `xlrd` is used instead, the only
+  maintained library that still reads it), or occasionally only a PDF.
+  For the PDF case, `_pdf_table_rows()` extracts per-page tables via
+  `pdfplumber`; ADBL's own PDF export doesn't repeat the header on later
+  pages, so the header from page 1 is reused for every subsequent page's
+  rows. All four formats converge on the same row list before the
+  header-detection/parsing logic below ever runs, so nothing downstream
+  needs to know which format the file actually was.
+
+**Excel-reading is split across two loaders that both handle `.xls`,
+implemented independently** (see §12's "two independent statement
+readers" note): `reconcile/statements.py::_load_excel_rows()` (used by
+`_adbl_statement_rows()` and `_is_withdraw_deposit_shape()`) and
+`core/services.py::_load_excel_rows()` (used by the generic
+`ENTRY TYPE`/`REMARKS` reader `_read_bank_statement_rows()` falls back
+to). Both pick `openpyxl` for `.xlsx`/`.xlsm` or `xlrd` for `.xls` based
+on the file's suffix, and both wrap the actual open in a `try/except`
+that turns any failure (wrong/corrupt format, a `.pdf` or plain-text
+file wearing an Excel-looking name, etc.) into a `ProcessingError`/`None`
+instead of letting `openpyxl`'s/`xlrd`'s own exception propagate — this
+is what stops a bad upload from surfacing as a raw Django 500 (see the
+transaction-file reader `reconcile/transactions.py::load_transactions()`
+for the same pattern, which raises `TransactionFileError` instead).
 
 ---
 
@@ -417,32 +452,59 @@ walks every transaction row once and classifies it by `Overall Status`:
   - **Manual** — `_reversal_already_confirmed()` (a later NCHL/Khalti
     reversal, or a DR matched by narration prefix) wins over
     "already succeeded" evidence and is reported **Reconciled
-    (Reversed)** rather than flagged — a deliberate correction (see
-    `reconcile/README.md`'s "settled then reversed" note): once
-    something has genuinely settled, *either* staying settled *or*
-    being reversed afterward is a complete, legitimate outcome, not an
-    anomaly. Only flagged if the statement shows success **and there's
-    no evidence of a subsequent reversal** — i.e. the reversal was
-    plausibly unnecessary.
+    (Reversed)** rather than flagged — a deliberate correction (see the
+    "settled then reversed" note in `engine.py`'s own top-of-file
+    docstring): once something has genuinely settled, *either* staying
+    settled *or* being reversed afterward is a complete, legitimate
+    outcome, not an anomaly. Only flagged if the statement shows success
+    **and there's no evidence of a subsequent reversal** — i.e. the
+    reversal was plausibly unnecessary.
   - **System** — same "already succeeded despite the auto-reversal"
     check; flagged if so (needs review, matches `core`'s
     `onus_system_reversal_flagged_count` idea), reconciled otherwise.
 - **`SUCCESS`** — this is where the SCT/NCHL/Khalti network-specific
-  checks run:
+  checks run. Presence of a matching CR/DR is necessary but **not**
+  sufficient in any of the three cases below — the entry's own AMOUNT
+  must also match what's expected (`_expected_statement_amount()`), and
+  (see "Duplicate debit/credit detection" further down) there must be
+  **exactly one** matching entry per leg, not more:
   - **SCT, on-us** (debtor bank == creditor bank): needs a statement for
-    that one bank; CR-only (no DR at all) is treated as reconciled
-    (per instruction: "if not CR then it's failed, it doesn't need
-    reconcile, it's already reconciled" — see the top-of-file docstring
-    for the full reasoning); CR **and** DR present → reconciled; only
-    one of CR/DR with the other statement available → flagged
-    (possible pending settlement leg, or a genuine mismatch).
+    that one bank; no CR/DR at all is treated as reconciled (per
+    instruction: most on-us transfers never touch the statement — see
+    the top-of-file docstring for the full reasoning); CR **and** DR
+    both present, each exactly once at the transaction's own amount →
+    reconciled; only one of CR/DR present, or both present but neither
+    at the right amount, or **more than one** matching CR or DR → flagged.
   - **SCT, cross-bank**: needs statements for *both* the debtor's and
-    creditor's bank; reconciled only if a CR shows on the debtor's
-    statement **and** a DR shows on the creditor's; otherwise flagged,
-    with a reason describing exactly which leg is missing.
-  - **NCHL / Khalti**: uses the same `is_already_debited_nchl()` /
-    `is_already_debited_khalti()` §5 logic (imported straight from
-    `core.services`) against our own issuer bank's statement.
+    creditor's bank; reconciled only if exactly one CR at the right
+    amount shows on the debtor's statement **and** exactly one DR at the
+    right amount shows on the creditor's; a missing leg, a
+    present-but-wrong-amount leg, or more than one matching CR/DR on
+    either side is flagged, with a reason describing exactly which case
+    it was.
+  - **NCHL / Khalti**: fast path is the same reference id tagged
+    directly on both a CR and DR leg at the network's own expected
+    settlement amount (`_expected_statement_amount()` — Khalti nets its
+    Rs. 10 charge out, NCHL backs out its own Rs. 10 then applies a
+    tiered real-time charge on top); falls back to the anchor-matching
+    `is_already_debited_nchl()` / `is_already_debited_khalti()` §5 logic
+    (imported straight from `core.services`, matching on beneficiary
+    name + masked settlement account instead of amount — the duplicate-
+    count check below does not apply to this fallback path, since it has
+    no reliable per-entry amount to count against) against our own
+    issuer bank's statement.
+  - **Duplicate debit/credit detection** (`_count_matching()`, all three
+    cases above): a legitimate transfer posts each leg exactly once, so
+    a reference id showing **two or more** CR entries or **two or more**
+    DR entries at the exact expected amount — any count above one, not
+    just exactly two — is flagged as a possible duplicate debit/credit
+    instead of being marked reconciled, with the exact counts named in
+    the reason (e.g. "Found 1 CR and 2 DR entries ... expected exactly
+    one of each"). Added after a real ACQ_SETTL on-us settlement row was
+    found silently reconciled despite the bank's statement showing the
+    DR leg posted twice for the same reference id and amount — a
+    presence-only check ("is there *a* CR and *a* DR") can't see this,
+    only a per-leg count can.
   - Every SCT pair without an uploaded statement for one of its two
     sides is bucketed **no_statement**, not flagged — a missing
     statement isn't evidence of a problem.
@@ -550,8 +612,10 @@ immediately, no restart needed.
   support). They share `build_bank_statement_index()` and the
   NCHL/Khalti detection functions (imported from `core.services` into
   `reconcile/engine.py`), but the parsing-into-that-shape step is
-  duplicated. Worth keeping in mind if you fix a parsing bug in one —
-  check whether the other needs the same fix.
+  duplicated — including, now, a near-identical `_load_excel_rows()`
+  helper in *both* files for `.xlsx`/`.xls` support (see §8). Worth
+  keeping in mind if you fix a parsing bug in one — check whether the
+  other needs the same fix.
 - **`DEBUG = True` and a placeholder `SECRET_KEY`** in
   `reversal_project/settings.py` — fine for local/trusted-network use,
   not for anything internet-facing. See `README.md`'s Setup section for

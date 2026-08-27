@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.contrib.auth.models import User
 
-from .models import BankAccount, ProcessingLog
+from .models import BankAccount, MailSignature, ProcessingLog, VerificationBankContact
 
 
 class UserAdmin(DjangoUserAdmin):
@@ -33,6 +33,20 @@ class BankAccountAdmin(admin.ModelAdmin):
     )
     list_filter = ("is_own_bank", "is_active")
     search_fields = ("bank_name", "keyword", "debit_account_number")
+
+
+@admin.register(VerificationBankContact)
+class VerificationBankContactAdmin(admin.ModelAdmin):
+    list_display = ("id", "bank_name", "keyword", "to_emails", "cc_emails", "is_active", "updated_at")
+    list_filter = ("is_active",)
+    search_fields = ("bank_name", "keyword", "to_emails", "cc_emails")
+
+
+@admin.register(MailSignature)
+class MailSignatureAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "title", "mobile", "is_active", "updated_at")
+    list_filter = ("is_active",)
+    search_fields = ("name", "title", "mobile")
 
 
 @admin.register(ProcessingLog)

@@ -2,6 +2,7 @@ import base64
 import io
 import time
 from datetime import datetime
+from email.mime.image import MIMEImage
 from pathlib import Path
 
 from django.conf import settings
@@ -9,16 +10,18 @@ from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required, user_passes_test
+from django.contrib.staticfiles import finders
 from django.core.files import File
+from django.core.mail import EmailMultiAlternatives
 from django.core.paginator import Paginator
 from django.db.models import Count, Max, Sum
 from django.db.models.functions import TruncDate, TruncMonth
-from django.http import FileResponse, Http404, HttpResponse
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -26,22 +29,36 @@ from .forms import (
     BankAccountForm,
     BankStatementUploadForm,
     CreateUserForm,
+    MailSignatureForm,
     UpdateUserForm,
     UploadForm,
+    VerificationBankContactForm,
     VerificationFormatUploadForm,
 )
-from .models import BankAccount, MemberAggregatorStat, ProcessingLog, SeenNetworkReferenceId
+from .models import (
+    BankAccount,
+    MailSignature,
+    MemberAggregatorStat,
+    ProcessingLog,
+    SeenNetworkReferenceId,
+    VerificationBankContact,
+)
 from .report_constants import MONTH_NAMES as _MONTH_NAMES
 from .report_constants import REASON_ORDER as _REASON_ORDER
 from .services import (
+    MAIL_SIGNATURE_IMAGE_CID,
     ProcessingError,
     apply_bank_statement_to_reversal_file,
     build_output_filename,
     build_uploaded_filename,
+    build_verification_bank_filename,
+    build_verification_email,
     build_verification_format,
     build_verification_output_filename,
+    build_verification_workbook,
     combine_bank_statement_files,
     extract_reversal_network_reference_ids,
+    group_verification_rows_by_bank,
     process_ibft_file,
 )
 
@@ -360,13 +377,14 @@ def bank_statement_upload_view(request):
     return render(request, "core/bank_statement_upload.html", context)
 
 
-_EXTRA_TABS = {"check", "addbank", "createuser", "verify"}
+_EXTRA_TABS = {"check", "addbank", "createuser", "verify", "bankcontacts", "mailsignature"}
 
 
 def _extra_page_context(request):
     """Shared context for the "Extra" page's tabs (Check bank statement /
-    Add bank account / Make user / Verification format). Each tab's own
-    view fills in its own form/result on top of this."""
+    Add bank account / Make user / Verification format / Bank contacts /
+    Mail signature). Each tab's own view fills in its own form/result on
+    top of this."""
     context = {"form": BankStatementUploadForm(user=request.user), "verification_form": VerificationFormatUploadForm()}
     if is_admin(request.user):
         # "Extra" page's second tab — add-bank-account feature for Admin
@@ -376,6 +394,17 @@ def _extra_page_context(request):
         # list of what's currently configured.
         context["bank_form"] = BankAccountForm()
         context["bank_accounts"] = BankAccount.objects.order_by("bank_name")
+        # "Bank contacts" tab — same self-service pattern as bank_form
+        # above, but for the Creditor-Bank -> email mapping used by the
+        # "Verification format" tab's per-bank "Send mail" buttons.
+        context["bank_contact_form"] = VerificationBankContactForm()
+        context["bank_contacts"] = VerificationBankContact.objects.order_by("bank_name")
+        # "Mail signature" tab — who those "Send mail" emails are signed
+        # as (core.models.MailSignature). Editable in-app (unlike the
+        # legacy MAIL_SIGNATURE_* .env defaults it falls back to) so
+        # staff turnover doesn't need a code change.
+        context["mail_signature_form"] = MailSignatureForm()
+        context["mail_signatures"] = MailSignature.objects.all()
     if is_superadmin(request.user):
         # "Make user" tab — Admin (is_superuser) only, unlike the rest of
         # this page's tabs which just need is_staff, since it can grant
@@ -407,6 +436,89 @@ def add_bank_account_view(request):
             for err in errors:
                 messages.error(request, f"{label}: {err}")
     return redirect(f"{reverse('core:bank_statement_upload')}?tab=addbank")
+
+
+@login_required
+@user_passes_test(is_admin, login_url="core:upload")
+@require_POST
+def add_verification_bank_contact_view(request):
+    """Add a new Creditor-Bank -> email-contact mapping
+    (core.models.VerificationBankContact) from the "Extra" page's Bank
+    contacts tab. Restricted to Admin (is_staff) users, same as
+    add_bank_account_view above."""
+    form = VerificationBankContactForm(request.POST)
+    if form.is_valid():
+        contact = form.save()
+        messages.success(
+            request,
+            f"Bank contact '{contact.bank_name}' (keyword '{contact.keyword}') added.",
+        )
+    else:
+        for field, errors in form.errors.items():
+            label = form.fields[field].label if field in form.fields else field
+            for err in errors:
+                messages.error(request, f"{label}: {err}")
+    return redirect(f"{reverse('core:bank_statement_upload')}?tab=bankcontacts")
+
+
+@login_required
+@user_passes_test(is_admin, login_url="core:upload")
+@require_POST
+def update_verification_bank_contact_view(request, contact_id):
+    """Edit an existing Creditor-Bank -> email-contact mapping from the
+    "Bank contacts" tab's list — the Edit button next to each row, same
+    pattern as update_user_view's per-user Edit button below."""
+    contact = get_object_or_404(VerificationBankContact, id=contact_id)
+    form = VerificationBankContactForm(request.POST, instance=contact)
+    if form.is_valid():
+        contact = form.save()
+        messages.success(request, f"Bank contact '{contact.bank_name}' updated.")
+    else:
+        for field, errors in form.errors.items():
+            label = form.fields[field].label if field in form.fields else field
+            for err in errors:
+                messages.error(request, f"{label}: {err}")
+    return redirect(f"{reverse('core:bank_statement_upload')}?tab=bankcontacts")
+
+
+@login_required
+@user_passes_test(is_admin, login_url="core:upload")
+@require_POST
+def add_mail_signature_view(request):
+    """Add a new core.models.MailSignature row from the "Extra" page's
+    "Mail signature" tab — used to sign every "Send mail" verification
+    email going forward (see resolve_mail_signature() in
+    core/services.py). Restricted to Admin (is_staff) users."""
+    form = MailSignatureForm(request.POST)
+    if form.is_valid():
+        signature = form.save()
+        messages.success(request, f"Mail signature '{signature.name or signature.title}' added.")
+    else:
+        for field, errors in form.errors.items():
+            label = form.fields[field].label if field in form.fields else field
+            for err in errors:
+                messages.error(request, f"{label}: {err}")
+    return redirect(f"{reverse('core:bank_statement_upload')}?tab=mailsignature")
+
+
+@login_required
+@user_passes_test(is_admin, login_url="core:upload")
+@require_POST
+def update_mail_signature_view(request, signature_id):
+    """Edit an existing mail signature — the Edit button next to each row
+    on the "Mail signature" tab's list. Untick "Active" here to retire a
+    signature (e.g. someone leaving) without deleting its history."""
+    signature = get_object_or_404(MailSignature, id=signature_id)
+    form = MailSignatureForm(request.POST, instance=signature)
+    if form.is_valid():
+        signature = form.save()
+        messages.success(request, f"Mail signature '{signature.name or signature.title}' updated.")
+    else:
+        for field, errors in form.errors.items():
+            label = form.fields[field].label if field in form.fields else field
+            for err in errors:
+                messages.error(request, f"{label}: {err}")
+    return redirect(f"{reverse('core:bank_statement_upload')}?tab=mailsignature")
 
 
 @login_required
@@ -500,7 +612,7 @@ def verification_format_view(request):
         if verification_form.is_valid():
             uploaded = verification_form.cleaned_data["dispute_file"]
             try:
-                wb_out, row_count = build_verification_format(io.BytesIO(uploaded.read()))
+                wb_out, row_count, rows_out, skipped_count = build_verification_format(io.BytesIO(uploaded.read()))
             except ProcessingError as exc:
                 verification_form.add_error("dispute_file", str(exc))
             except Exception as exc:  # noqa: BLE001 - surface unexpected errors on the form too
@@ -508,14 +620,108 @@ def verification_format_view(request):
             else:
                 buf = io.BytesIO()
                 wb_out.save(buf)
+
+                banks = []
+                for group in group_verification_rows_by_bank(rows_out):
+                    group_buf = io.BytesIO()
+                    build_verification_workbook(group["rows"]).save(group_buf)
+                    contact = group["contact"]
+                    banks.append(
+                        {
+                            "bank_name": group["bank_name"],
+                            "count": len(group["rows"]),
+                            "filename": build_verification_bank_filename(group["bank_name"], uploaded.name),
+                            "b64": base64.b64encode(group_buf.getvalue()).decode("ascii"),
+                            "contact_id": contact.id if contact else None,
+                            "to_emails": contact.to_emails if contact else "",
+                            "cc_emails": contact.cc_emails if contact else "",
+                        }
+                    )
+
                 context["verification_result"] = {
                     "filename": build_verification_output_filename(uploaded.name),
                     "row_count": row_count,
+                    "skipped_count": skipped_count,
                     "b64": base64.b64encode(buf.getvalue()).decode("ascii"),
+                    "banks": banks,
                 }
         context["verification_form"] = verification_form
 
     return render(request, "core/bank_statement_upload.html", context)
+
+
+@login_required
+@require_POST
+def verification_send_mail_view(request):
+    """AJAX endpoint behind each per-bank "Send mail" button on the
+    "Verification format" tab (see build_verification_email() /
+    group_verification_rows_by_bank() in core/services.py). Takes the
+    bank's already-converted workbook (base64, round-tripped from the
+    hidden field the conversion response rendered) plus the
+    VerificationBankContact id to send it to, and emails it — nothing
+    about this dispute run is read from or written to the database. Returns
+    JSON so the page can show the result without losing the conversion
+    it's already showing (a normal redirect would lose that state, since
+    nothing here is persisted)."""
+    contact_id = request.POST.get("contact_id")
+    bank_name = (request.POST.get("bank_name") or "").strip()
+    filename = request.POST.get("filename") or "verification.xlsx"
+    b64 = request.POST.get("xlsx_b64") or ""
+
+    if not contact_id or not b64:
+        return JsonResponse({"success": False, "message": "Missing bank contact or file data."}, status=400)
+
+    contact = VerificationBankContact.objects.filter(id=contact_id, is_active=True).first()
+    if not contact:
+        return JsonResponse(
+            {"success": False, "message": "No active email contact configured for this bank."}, status=400
+        )
+
+    to_list = [a.strip() for a in contact.to_emails.split(",") if a.strip()]
+    cc_list = [a.strip() for a in contact.cc_emails.split(",") if a.strip()]
+    if not to_list:
+        return JsonResponse({"success": False, "message": "This bank contact has no 'To' email configured."}, status=400)
+
+    try:
+        xlsx_bytes = base64.b64decode(b64)
+    except Exception:
+        return JsonResponse({"success": False, "message": "Corrupted file data — please convert again."}, status=400)
+
+    try:
+        wb = load_workbook(io.BytesIO(xlsx_bytes), data_only=True, read_only=True)
+        ws = wb.active
+        rows = [list(row) for row in ws.iter_rows(min_row=2, values_only=True)]
+        wb.close()
+    except Exception as exc:  # noqa: BLE001 - surface unexpected errors to the caller
+        return JsonResponse({"success": False, "message": f"Could not read the attachment: {exc}"}, status=400)
+
+    fallback_sender_name = request.user.get_full_name() or request.user.username
+    subject, html_body, text_body = build_verification_email(bank_name, rows, fallback_sender_name)
+
+    email = EmailMultiAlternatives(subject=subject, body=text_body, to=to_list, cc=cc_list or None)
+    email.attach_alternative(html_body, "text/html")
+
+    # Inline sct-signature banner referenced by the HTML body as
+    # cid:MAIL_SIGNATURE_IMAGE_CID (see build_verification_email()) —
+    # "related" so mail clients render it inline instead of as a
+    # separate attachment.
+    signature_path = finders.find("core/img/mail-signature.png")
+    if signature_path:
+        email.mixed_subtype = "related"
+        with open(signature_path, "rb") as img_file:
+            signature_image = MIMEImage(img_file.read())
+        signature_image.add_header("Content-ID", f"<{MAIL_SIGNATURE_IMAGE_CID}>")
+        signature_image.add_header("Content-Disposition", "inline", filename="mail-signature.png")
+        email.attach(signature_image)
+
+    email.attach(filename, xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    try:
+        email.send(fail_silently=False)
+    except Exception as exc:  # noqa: BLE001 - surface the SMTP error to the caller
+        return JsonResponse({"success": False, "message": f"Send failed: {exc}"}, status=502)
+
+    recipients = ", ".join(to_list) + (f" (cc: {', '.join(cc_list)})" if cc_list else "")
+    return JsonResponse({"success": True, "message": f"Sent to {recipients}"})
 
 
 def _panel_context(request):

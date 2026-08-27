@@ -41,6 +41,15 @@ class ReconcileRun(models.Model):
     statements_uploaded = models.JSONField(default=list, blank=True)
     statements_missing = models.JSONField(default=list, blank=True)
 
+    # Non-fatal issues raised while reading the uploaded statements (e.g. a
+    # bank's file failed to parse, came back suspiciously thin, or matched
+    # none of this run's own reference ids) — see
+    # reconcile.statements.write_combined_statement_csv(). A bank listed
+    # here still lands in statements_missing/every one of its transactions
+    # on the "No Statement" sheet even though a file *was* uploaded for it,
+    # so this is the only place that actually explains why.
+    warnings = models.JSONField(default=list, blank=True)
+
     total_transactions = models.PositiveIntegerField(default=0)
 
     sct_total = models.PositiveIntegerField(default=0)

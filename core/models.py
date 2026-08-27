@@ -313,6 +313,138 @@ class BankAccount(models.Model):
         super().save(*args, **kwargs)
 
 
+class VerificationBankContact(models.Model):
+    """Bank -> email-contact mapping used by the "Extra" page's
+    "Verification format" tab: once a dispute file is converted, its rows
+    are grouped by "Creditor Bank" and, for any group whose Creditor Bank
+    text matches an active row here (by Keyword), a "Send mail" button
+    emails that bank's rows straight to the configured address(es) — the
+    same verification request that used to be sent by hand.
+
+    A group with no matching row here still shows up (with its count) but
+    its "Send mail" button is disabled until a contact is added, so nothing
+    is ever emailed to a guessed address."""
+
+    bank_name = models.CharField(
+        max_length=100,
+        help_text="Display name, e.g. 'Agriculture Development Bank Ltd (ADBL)'.",
+    )
+    keyword = models.CharField(
+        max_length=50,
+        unique=True,
+        help_text=(
+            "Upper-cased, case-insensitive substring matched against the "
+            "'Creditor Bank' column, e.g. 'GARIMA' matches 'Garima Bikas "
+            "Bank Ltd'. Keep this short and specific."
+        ),
+    )
+    to_emails = models.CharField(
+        max_length=500,
+        help_text="Comma-separated 'To' address(es) for this bank's verification requests.",
+    )
+    cc_emails = models.CharField(
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="Optional comma-separated 'Cc' address(es).",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Untick to stop matching this bank without deleting the row.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["bank_name"]
+
+    def __str__(self):
+        return f"{self.bank_name} ({self.keyword})"
+
+    def save(self, *args, **kwargs):
+        self.keyword = (self.keyword or "").strip().upper()
+        super().save(*args, **kwargs)
+
+
+class MailSignature(models.Model):
+    """Who verification emails (see VerificationBankContact / the
+    "Verification format" tab's "Send mail" button) are signed as — kept
+    in the database instead of hardcoded settings/.env values so it can be
+    changed from the app itself as staff come and go, with no code change
+    or restart: add a new row for a new person, untick "Active" on the one
+    they're replacing.
+
+    When more than one row is active, the most recently updated one wins
+    (see core/services.py:build_verification_email) — there's no hard
+    one-row-only constraint, so an outgoing person can stay visible here
+    (unticked) without deleting their history.
+
+    Name is optional on purpose: leave it blank for a shared/generic
+    mailbox so the signature reads just "Regards, <Title>" with no named
+    sender. Company/address/toll-free/website are also editable here per
+    row, but only need filling in if this row should override the
+    MAIL_SIGNATURE_COMPANY etc. settings/.env defaults — leave any of them
+    blank to fall back to that default instead (see
+    core/services.py:resolve_mail_signature). The sct-signature banner
+    image itself is not editable here — it's the static file at
+    core/static/core/img/mail-signature.png, replace that file to change
+    it for everyone."""
+
+    name = models.CharField(
+        max_length=150,
+        blank=True,
+        default="",
+        help_text="Leave blank for a generic/shared mailbox — the signature will show only the title below.",
+    )
+    title = models.CharField(
+        max_length=150,
+        default="Tech Operation Department",
+        help_text="Shown under the name (or alone, if Name is blank), e.g. 'Tech Operation Department'.",
+    )
+    mobile = models.CharField(
+        max_length=30,
+        blank=True,
+        default="",
+        help_text="Optional — leave blank to omit the 'Mobile:' line entirely.",
+    )
+    company = models.CharField(
+        max_length=150,
+        blank=True,
+        default="",
+        help_text="Optional — leave blank to use the MAIL_SIGNATURE_COMPANY default.",
+    )
+    address = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Optional — leave blank to use the MAIL_SIGNATURE_ADDRESS default.",
+    )
+    toll_free = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Optional — leave blank to use the MAIL_SIGNATURE_TOLL_FREE default.",
+    )
+    website = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Optional — leave blank to use the MAIL_SIGNATURE_WEBSITE default.",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="The most recently updated active row is used to sign outgoing verification emails.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return f"{self.name or self.title} ({'active' if self.is_active else 'inactive'})"
+
+
 def _clear_bank_account_cache(**kwargs):
     # Lazy import: services.py has no top-level dependency on models.py, and
     # this keeps it that way — only reached once Django has fully loaded.

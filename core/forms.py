@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 
-from .models import BankAccount, ProcessingLog
+from .models import BankAccount, MailSignature, ProcessingLog, VerificationBankContact
 
 
 class UploadForm(forms.Form):
@@ -170,6 +170,113 @@ class BankAccountForm(forms.ModelForm):
         if not account:
             raise forms.ValidationError("Debit account number is required.")
         return account
+
+
+class VerificationBankContactForm(forms.ModelForm):
+    """Lets an Admin (is_staff) user add a Creditor-Bank -> email-contact
+    mapping from the "Extra" page's "Verification format" tab, used to
+    email that bank's dispute rows with one click. Editing/deleting an
+    existing row is superuser-only, via Django admin (see
+    VerificationBankContactAdmin in core/admin.py).
+
+    to_emails/cc_emails each accept more than one address (comma or
+    semicolon separated — see clean_to_emails()/clean_cc_emails() below);
+    the template turns their "email-raw-input" widget into a chip-style
+    multi-email box (type one, press Enter/comma), so this stays a plain
+    CharField behind the scenes. to_emails is declared required=False here
+    (instead of inheriting the model's non-blank constraint) purely so the
+    browser doesn't try to HTML5-validate the hidden raw input the chip
+    widget replaces — clean_to_emails() still enforces it server-side."""
+
+    to_emails = forms.CharField(
+        label="To email(s)",
+        required=False,
+        widget=forms.TextInput(
+            attrs={"placeholder": "e.g. ops@adbl.com.np, card@adbl.com.np", "class": "email-raw-input"}
+        ),
+    )
+
+    class Meta:
+        model = VerificationBankContact
+        fields = ["bank_name", "keyword", "to_emails", "cc_emails", "is_active"]
+        labels = {
+            "bank_name": "Bank name",
+            "keyword": "Keyword (matched against Creditor Bank)",
+            "cc_emails": "Cc email(s)",
+            "is_active": "Active",
+        }
+        widgets = {
+            "bank_name": forms.TextInput(attrs={"placeholder": "e.g. Agriculture Development Bank Ltd (ADBL)"}),
+            "keyword": forms.TextInput(attrs={"placeholder": "e.g. ADBL"}),
+            "cc_emails": forms.TextInput(attrs={"placeholder": "optional", "class": "email-raw-input"}),
+        }
+
+    def clean_keyword(self):
+        keyword = (self.cleaned_data.get("keyword") or "").strip().upper()
+        if not keyword:
+            raise forms.ValidationError("Keyword is required.")
+        return keyword
+
+    def clean_bank_name(self):
+        name = (self.cleaned_data.get("bank_name") or "").strip()
+        if not name:
+            raise forms.ValidationError("Bank name is required.")
+        return name
+
+    def clean_to_emails(self):
+        raw = (self.cleaned_data.get("to_emails") or "").strip()
+        if not raw:
+            raise forms.ValidationError("At least one 'To' email is required.")
+        addresses = [a.strip() for a in raw.replace(";", ",").split(",") if a.strip()]
+        validator = forms.EmailField()
+        for addr in addresses:
+            validator.clean(addr)
+        return ", ".join(addresses)
+
+    def clean_cc_emails(self):
+        raw = (self.cleaned_data.get("cc_emails") or "").strip()
+        if not raw:
+            return ""
+        addresses = [a.strip() for a in raw.replace(";", ",").split(",") if a.strip()]
+        validator = forms.EmailField()
+        for addr in addresses:
+            validator.clean(addr)
+        return ", ".join(addresses)
+
+
+class MailSignatureForm(forms.ModelForm):
+    """Lets an Admin (is_staff) user add/edit who verification emails are
+    signed as (core.models.MailSignature), from the "Extra" page's "Mail
+    signature" tab — no code change or deploy needed when staff change."""
+
+    class Meta:
+        model = MailSignature
+        fields = ["name", "title", "mobile", "company", "address", "toll_free", "website", "is_active"]
+        labels = {
+            "name": "Name (optional)",
+            "title": "Title / department",
+            "mobile": "Mobile (optional)",
+            "company": "Company (optional — overrides the default)",
+            "address": "Address (optional — overrides the default)",
+            "toll_free": "Toll free (optional — overrides the default)",
+            "website": "Website (optional — overrides the default)",
+            "is_active": "Active",
+        }
+        widgets = {
+            "name": forms.TextInput(attrs={"placeholder": "e.g. Ashok Koirala — leave blank for a generic mailbox"}),
+            "title": forms.TextInput(attrs={"placeholder": "e.g. Tech Operation Department"}),
+            "mobile": forms.TextInput(attrs={"placeholder": "e.g. +977-9849626348"}),
+            "company": forms.TextInput(attrs={"placeholder": "leave blank to use the configured default"}),
+            "address": forms.TextInput(attrs={"placeholder": "leave blank to use the configured default"}),
+            "toll_free": forms.TextInput(attrs={"placeholder": "leave blank to use the configured default"}),
+            "website": forms.TextInput(attrs={"placeholder": "leave blank to use the configured default"}),
+        }
+
+    def clean_title(self):
+        title = (self.cleaned_data.get("title") or "").strip()
+        if not title:
+            raise forms.ValidationError("Title / department is required.")
+        return title
 
 
 class CreateUserForm(forms.Form):

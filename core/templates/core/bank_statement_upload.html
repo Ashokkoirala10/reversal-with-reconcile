@@ -12,13 +12,18 @@
         <button type="button" class="extra-tab-btn" data-extra-tab="createuser" onclick="showExtraTab('createuser')">Make user</button>
         {% endif %}
         <button type="button" class="extra-tab-btn" data-extra-tab="verify" onclick="showExtraTab('verify')">Verification format</button>
+        {% if bank_contact_form %}
+        <button type="button" class="extra-tab-btn" data-extra-tab="bankcontacts" onclick="showExtraTab('bankcontacts')">Bank contacts</button>
+        {% endif %}
+        {% if mail_signature_form %}
+        <button type="button" class="extra-tab-btn" data-extra-tab="mailsignature" onclick="showExtraTab('mailsignature')">Mail signature</button>
+        {% endif %}
     </div>
 
     <div id="extra-tab-check">
     <div class="info-box">
         You can upload a <strong>Global IME Bank</strong> statement, a <strong>Prabhu Bank</strong> statement
-        (up to 4 files, e.g. several daily exports), or <strong>both at once</strong> - whatever you provide is
-        combined into a single file automatically and checked together. 
+        (up to 4 files, e.g. several daily exports), or <strong>both at once</strong> 
     </div>
 
     <form method="post" enctype="multipart/form-data" id="statement-form">
@@ -245,8 +250,13 @@
     {% endif %}
 
     <div id="extra-tab-verify" style="display:none;">
-        <div class="info-box">
-            Upload a <strong>dispute transaction</strong> file
+        <div style="display:flex; align-items:flex-start; gap:8px;">
+            <div class="info-box" style="flex:1 1 auto;">
+                Upload a <strong>dispute transaction</strong> file
+            </div>
+            <a href="{% url 'core:bank_statement_upload' %}?tab=verify"
+               class="btn btn-sm btn-secondary" style="flex:0 0 auto; text-decoration:none;"
+               title="Clear this converted result and the uploaded file, and start over">&#8635; Refresh</a>
         </div>
 
         <form method="post" action="{% url 'core:verification_format' %}" enctype="multipart/form-data" id="verify-form">
@@ -258,14 +268,270 @@
             </div>
             <button type="submit" class="btn" id="verify-submit-btn" style="width:100%;">Convert</button>
         </form>
+
+        {% if verification_result.banks %}
+        <h3 style="margin-top:22px; font-size:15px;">By bank</h3>
+        <div class="bank-breakdown-list">
+            {% for bank in verification_result.banks %}
+            <div class="bank-breakdown-row">
+                <span class="bank-breakdown-name">{{ bank.bank_name }}</span>
+                <span class="bank-breakdown-count">{{ bank.count }}</span>
+                {% if bank.contact_id %}
+                <button type="button" class="btn btn-sm send-mail-btn"
+                        data-contact-id="{{ bank.contact_id }}"
+                        data-bank-name="{{ bank.bank_name }}"
+                        data-filename="{{ bank.filename }}"
+                        data-xlsx-b64="{{ bank.b64 }}"
+                        title="Sends to: {{ bank.to_emails }}{% if bank.cc_emails %} (cc: {{ bank.cc_emails }}){% endif %}"
+                        onclick="sendVerificationMail(this)">Send mail</button>
+                {% else %}
+                <button type="button" class="btn btn-sm btn-secondary" disabled
+                        title="No email contact configured for this bank yet — add one in the 'Bank contacts' tab.">Send mail</button>
+                {% endif %}
+                <span class="bank-breakdown-status" aria-live="polite"></span>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
     </div>
+
+    {% if bank_contact_form %}
+    <div id="extra-tab-bankcontacts" style="display:none;">
+        <div class="info-box">
+            Map a <strong>Creditor Bank &rarr; email</strong>
+        </div>
+
+        <form method="post" action="{% url 'core:add_verification_bank_contact' %}" id="add-bank-contact-form">
+            {% csrf_token %}
+            <div class="field">
+                <label for="id_bank_name">{{ bank_contact_form.bank_name.label }}</label>
+                {{ bank_contact_form.bank_name }}
+                {% if bank_contact_form.bank_name.errors %}<div class="error-box">{{ bank_contact_form.bank_name.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_keyword">{{ bank_contact_form.keyword.label }}</label>
+                {{ bank_contact_form.keyword }}
+                {% if bank_contact_form.keyword.errors %}<div class="error-box">{{ bank_contact_form.keyword.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_to_emails">{{ bank_contact_form.to_emails.label }}</label>
+                {{ bank_contact_form.to_emails }}
+                {% if bank_contact_form.to_emails.errors %}<div class="error-box">{{ bank_contact_form.to_emails.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_cc_emails">{{ bank_contact_form.cc_emails.label }}</label>
+                {{ bank_contact_form.cc_emails }}
+                {% if bank_contact_form.cc_emails.errors %}<div class="error-box">{{ bank_contact_form.cc_emails.errors }}</div>{% endif %}
+            </div>
+            <div class="field" style="display:flex; align-items:center; gap:8px;">
+                {{ bank_contact_form.is_active }}
+                <label for="id_is_active" style="margin:0;">{{ bank_contact_form.is_active.label }}</label>
+            </div>
+            <button type="submit" class="btn" style="width:100%;">Add bank contact</button>
+        </form>
+
+        {% if bank_contacts %}
+        <h3 style="margin-top:22px; font-size:15px;">Currently configured bank contacts</h3>
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Bank name</th>
+                        <th>Keyword</th>
+                        <th>To</th>
+                        <th>Cc</th>
+                        <th>Active</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for contact in bank_contacts %}
+                        <tr>
+                            <td>{{ contact.bank_name }}</td>
+                            <td>{{ contact.keyword }}</td>
+                            <td>{{ contact.to_emails }}</td>
+                            <td>{{ contact.cc_emails|default:"—" }}</td>
+                            <td>{% if contact.is_active %}Yes{% else %}No{% endif %}</td>
+                            <td>
+                                <button type="button" class="btn btn-sm btn-secondary" onclick="openEditBankContactModal({{ contact.id }})">Edit</button>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% for contact in bank_contacts %}
+        <div id="edit-bank-contact-modal-{{ contact.id }}" class="download-modal-overlay" style="display:none;">
+            <div class="download-modal" style="text-align:left;">
+                <h3>Edit bank contact</h3>
+                <form method="post" action="{% url 'core:update_verification_bank_contact' contact.id %}">
+                    {% csrf_token %}
+                    <div class="field">
+                        <label for="edit-bank-name-{{ contact.id }}">Bank name</label>
+                        <input type="text" name="bank_name" id="edit-bank-name-{{ contact.id }}" value="{{ contact.bank_name }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-bank-keyword-{{ contact.id }}">Keyword (matched against Creditor Bank)</label>
+                        <input type="text" name="keyword" id="edit-bank-keyword-{{ contact.id }}" value="{{ contact.keyword }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-bank-to-{{ contact.id }}">To email(s)</label>
+                        <input type="text" class="email-raw-input" name="to_emails" id="edit-bank-to-{{ contact.id }}" value="{{ contact.to_emails }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-bank-cc-{{ contact.id }}">Cc email(s)</label>
+                        <input type="text" class="email-raw-input" name="cc_emails" id="edit-bank-cc-{{ contact.id }}" value="{{ contact.cc_emails }}">
+                    </div>
+                    <div class="field" style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" name="is_active" id="edit-bank-active-{{ contact.id }}" {% if contact.is_active %}checked{% endif %}>
+                        <label for="edit-bank-active-{{ contact.id }}" style="margin:0;">Active</label>
+                    </div>
+                    <button type="submit" class="btn" style="width:100%;">Save changes</button>
+                    <button type="button" class="btn btn-secondary" style="width:100%; margin-top:8px;" onclick="closeEditBankContactModal({{ contact.id }})">Cancel</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if mail_signature_form %}
+    <div id="extra-tab-mailsignature" style="display:none;">
+        <div class="info-box">
+             When more than one row is Active, the most recently updated one is used —
+            untick Active of all others.
+        </div>
+
+        <form method="post" action="{% url 'core:add_mail_signature' %}" id="add-mail-signature-form">
+            {% csrf_token %}
+            <div class="field">
+                <label for="id_name">{{ mail_signature_form.name.label }}</label>
+                {{ mail_signature_form.name }}
+                {% if mail_signature_form.name.errors %}<div class="error-box">{{ mail_signature_form.name.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_title">{{ mail_signature_form.title.label }}</label>
+                {{ mail_signature_form.title }}
+                {% if mail_signature_form.title.errors %}<div class="error-box">{{ mail_signature_form.title.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_mobile">{{ mail_signature_form.mobile.label }}</label>
+                {{ mail_signature_form.mobile }}
+                {% if mail_signature_form.mobile.errors %}<div class="error-box">{{ mail_signature_form.mobile.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_company">{{ mail_signature_form.company.label }}</label>
+                {{ mail_signature_form.company }}
+                {% if mail_signature_form.company.errors %}<div class="error-box">{{ mail_signature_form.company.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_address">{{ mail_signature_form.address.label }}</label>
+                {{ mail_signature_form.address }}
+                {% if mail_signature_form.address.errors %}<div class="error-box">{{ mail_signature_form.address.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_toll_free">{{ mail_signature_form.toll_free.label }}</label>
+                {{ mail_signature_form.toll_free }}
+                {% if mail_signature_form.toll_free.errors %}<div class="error-box">{{ mail_signature_form.toll_free.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_website">{{ mail_signature_form.website.label }}</label>
+                {{ mail_signature_form.website }}
+                {% if mail_signature_form.website.errors %}<div class="error-box">{{ mail_signature_form.website.errors }}</div>{% endif %}
+            </div>
+            <div class="field" style="display:flex; align-items:center; gap:8px;">
+                {{ mail_signature_form.is_active }}
+                <label for="id_is_active" style="margin:0;">{{ mail_signature_form.is_active.label }}</label>
+            </div>
+            <button type="submit" class="btn" style="width:100%;">Add mail signature</button>
+        </form>
+
+        {% if mail_signatures %}
+        <h3 style="margin-top:22px; font-size:15px;">Configured signatures</h3>
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Title</th>
+                        <th>Mobile</th>
+                        <th>Active</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sig in mail_signatures %}
+                        <tr>
+                            <td>{{ sig.name|default:"—" }}</td>
+                            <td>{{ sig.title }}</td>
+                            <td>{{ sig.mobile|default:"—" }}</td>
+                            <td>{% if sig.is_active %}Yes{% else %}No{% endif %}</td>
+                            <td>
+                                <button type="button" class="btn btn-sm btn-secondary" onclick="openEditMailSignatureModal({{ sig.id }})">Edit</button>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% for sig in mail_signatures %}
+        <div id="edit-mail-signature-modal-{{ sig.id }}" class="download-modal-overlay" style="display:none;">
+            <div class="download-modal" style="text-align:left;">
+                <h3>Edit mail signature</h3>
+                <form method="post" action="{% url 'core:update_mail_signature' sig.id %}">
+                    {% csrf_token %}
+                    <div class="field">
+                        <label for="edit-sig-name-{{ sig.id }}">Name (optional)</label>
+                        <input type="text" name="name" id="edit-sig-name-{{ sig.id }}" value="{{ sig.name }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-sig-title-{{ sig.id }}">Title / department</label>
+                        <input type="text" name="title" id="edit-sig-title-{{ sig.id }}" value="{{ sig.title }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-sig-mobile-{{ sig.id }}">Mobile (optional)</label>
+                        <input type="text" name="mobile" id="edit-sig-mobile-{{ sig.id }}" value="{{ sig.mobile }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-sig-company-{{ sig.id }}">Company (optional — overrides the default)</label>
+                        <input type="text" name="company" id="edit-sig-company-{{ sig.id }}" value="{{ sig.company }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-sig-address-{{ sig.id }}">Address (optional — overrides the default)</label>
+                        <input type="text" name="address" id="edit-sig-address-{{ sig.id }}" value="{{ sig.address }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-sig-tollfree-{{ sig.id }}">Toll free (optional — overrides the default)</label>
+                        <input type="text" name="toll_free" id="edit-sig-tollfree-{{ sig.id }}" value="{{ sig.toll_free }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-sig-website-{{ sig.id }}">Website (optional — overrides the default)</label>
+                        <input type="text" name="website" id="edit-sig-website-{{ sig.id }}" value="{{ sig.website }}">
+                    </div>
+                    <div class="field" style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" name="is_active" id="edit-sig-active-{{ sig.id }}" {% if sig.is_active %}checked{% endif %}>
+                        <label for="edit-sig-active-{{ sig.id }}" style="margin:0;">Active</label>
+                    </div>
+                    <button type="submit" class="btn" style="width:100%;">Save changes</button>
+                    <button type="button" class="btn btn-secondary" style="width:100%; margin-top:8px;" onclick="closeEditMailSignatureModal({{ sig.id }})">Cancel</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+        {% endif %}
+    </div>
+    {% endif %}
 </div>
 
 {% if verification_result %}
 <div id="download-modal-overlay" class="download-modal-overlay">
     <div class="download-modal">
         <h3>Conversion complete</h3>
-        <p>{{ verification_result.row_count }} row{{ verification_result.row_count|pluralize }} converted to the bank verification format.</p>
+        <p>{{ verification_result.row_count }} row{{ verification_result.row_count|pluralize }} converted to the bank verification format.
+        {% if verification_result.skipped_count %}<br><span class="muted">{{ verification_result.skipped_count }} row{{ verification_result.skipped_count|pluralize }} skipped (not Debit Status SUCCESS + Credit Status FAILED/TIMEOUT) — not sent to the bank.</span>{% endif %}</p>
         <a id="download-modal-link"
            class="btn"
            style="display:inline-block; text-decoration:none; text-align:center; width:100%;"
@@ -315,6 +581,15 @@ main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; jus
     font-size:15px; line-height:1; padding:0 4px; font-weight:bold;
 }
 .file-chip button:hover { color:#9c0006; }
+.email-raw-input { display:none; }
+.email-chip-box {
+    display:flex; flex-wrap:wrap; align-items:center; gap:6px;
+    border:1px solid #d1d5db; border-radius:8px; padding:6px 8px; background:#fff;
+}
+.email-chip-box:focus-within { border-color:#1D4ED8; }
+.email-chip-typer {
+    flex:1 1 140px; min-width:140px; border:none; outline:none; font-size:13.5px; padding:4px 2px;
+}
 .extra-tabs { display:flex; gap:8px; margin-bottom:16px; border-bottom:1px solid #e5e7eb; }
 .extra-tab-btn {
     background:none; border:none; cursor:pointer; padding:8px 14px;
@@ -324,10 +599,13 @@ main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; jus
 .download-modal-overlay {
     position:fixed; inset:0; background:rgba(15,23,42,0.55);
     display:flex; align-items:center; justify-content:center; z-index:1000;
+    padding:20px; box-sizing:border-box; overflow-y:auto;
 }
 .download-modal {
     background:#fff; border-radius:10px; padding:24px; width:90%; max-width:420px;
+    max-height:calc(100vh - 40px); overflow-y:auto;
     box-shadow:0 20px 50px rgba(0,0,0,0.25);
+    margin:auto;
 }
 .download-modal h3 { margin:0 0 10px; color:#1D4ED8; }
 .download-modal p { margin:0 0 16px; color:#374151; font-size:14px; }
@@ -339,6 +617,19 @@ main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; jus
 .btn-success:hover { background:#15803d; }
 .btn-danger { background:white; color:#991b1b; border:1.5px solid #fca5a5; }
 .btn-danger:hover { background:#fef2f2; }
+.bank-breakdown-list { display:flex; flex-direction:column; gap:8px; }
+.bank-breakdown-row {
+    display:flex; align-items:center; gap:10px;
+    border:1px solid #e5e7eb; border-radius:8px; padding:8px 12px;
+}
+.bank-breakdown-name { flex:1 1 auto; font-weight:600; font-size:13.5px; color:#374151; }
+.bank-breakdown-count {
+    background:#eef2ff; color:#3730a3; border-radius:12px;
+    padding:2px 10px; font-size:12.5px; font-weight:700;
+}
+.bank-breakdown-status { font-size:12px; min-width:0; }
+.bank-breakdown-status.status-ok { color:#15803d; }
+.bank-breakdown-status.status-error { color:#991b1b; }
 </style>
 <script>
 document.getElementById('statement-form').addEventListener('submit', function () {
@@ -371,6 +662,8 @@ function showExtraTab(tab) {
         addbank: document.getElementById('extra-tab-addbank'),
         createuser: document.getElementById('extra-tab-createuser'),
         verify: document.getElementById('extra-tab-verify'),
+        bankcontacts: document.getElementById('extra-tab-bankcontacts'),
+        mailsignature: document.getElementById('extra-tab-mailsignature'),
     };
     Object.keys(panels).forEach(function (key) {
         if (!panels[key]) { return; }
@@ -398,6 +691,26 @@ function openEditUserModal(id) {
 
 function closeEditUserModal(id) {
     var modal = document.getElementById('edit-user-modal-' + id);
+    if (modal) { modal.style.display = 'none'; }
+}
+
+function openEditBankContactModal(id) {
+    var modal = document.getElementById('edit-bank-contact-modal-' + id);
+    if (modal) { modal.style.display = 'flex'; }
+}
+
+function closeEditBankContactModal(id) {
+    var modal = document.getElementById('edit-bank-contact-modal-' + id);
+    if (modal) { modal.style.display = 'none'; }
+}
+
+function openEditMailSignatureModal(id) {
+    var modal = document.getElementById('edit-mail-signature-modal-' + id);
+    if (modal) { modal.style.display = 'flex'; }
+}
+
+function closeEditMailSignatureModal(id) {
+    var modal = document.getElementById('edit-mail-signature-modal-' + id);
     if (modal) { modal.style.display = 'none'; }
 }
 
@@ -464,5 +777,131 @@ function setupAccumulatingFileInput(inputId, chipListId, maxFiles) {
 
 setupAccumulatingFileInput('id_global_statement_files', 'global-chip-list', 1);
 setupAccumulatingFileInput('id_prabhu_statement_files', 'prabhu-chip-list', 4);
+
+// Turns a plain comma/semicolon-separated email text input (marked with
+// class="email-raw-input" — see VerificationBankContactForm in
+// core/forms.py) into a chip-style multi-email box: type one address,
+// press Enter/comma/semicolon to add it as a chip, backspace on an empty
+// typer to pop the last one. The raw input is hidden (not removed) and
+// kept in sync as the actual comma-joined value the form submits.
+function setupEmailChipInput(rawInput) {
+    if (!rawInput || rawInput.dataset.chipified) { return; }
+    rawInput.dataset.chipified = '1';
+
+    var box = document.createElement('div');
+    box.className = 'email-chip-box';
+    rawInput.parentNode.insertBefore(box, rawInput);
+
+    var chipList = document.createElement('div');
+    chipList.className = 'file-chip-list';
+    chipList.style.marginTop = '0';
+    box.appendChild(chipList);
+
+    var typer = document.createElement('input');
+    typer.type = 'text';
+    typer.className = 'email-chip-typer';
+    typer.placeholder = rawInput.placeholder || 'Type an email, then press Enter';
+    box.appendChild(typer);
+
+    var emails = (rawInput.value || '').split(/[,;]/).map(function (s) { return s.trim(); }).filter(Boolean);
+
+    function sync() { rawInput.value = emails.join(', '); }
+
+    function render() {
+        chipList.innerHTML = '';
+        emails.forEach(function (email, idx) {
+            var chip = document.createElement('span');
+            chip.className = 'file-chip';
+            var label = document.createElement('span');
+            label.textContent = email;
+            chip.appendChild(label);
+            var removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.textContent = '×';
+            removeBtn.setAttribute('aria-label', 'Remove ' + email);
+            removeBtn.addEventListener('click', function () {
+                emails.splice(idx, 1);
+                sync();
+                render();
+            });
+            chip.appendChild(removeBtn);
+            chipList.appendChild(chip);
+        });
+    }
+
+    function addFromTyper() {
+        typer.value.split(/[,;]/).forEach(function (part) {
+            var email = part.trim();
+            if (email && emails.indexOf(email) === -1) { emails.push(email); }
+        });
+        typer.value = '';
+        sync();
+        render();
+    }
+
+    typer.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ',' || e.key === ';' || e.key === 'Tab') {
+            if (typer.value.trim()) {
+                e.preventDefault();
+                addFromTyper();
+            }
+        } else if (e.key === 'Backspace' && !typer.value && emails.length) {
+            emails.pop();
+            sync();
+            render();
+        }
+    });
+    typer.addEventListener('blur', function () {
+        if (typer.value.trim()) { addFromTyper(); }
+    });
+
+    render();
+}
+
+document.querySelectorAll('.email-raw-input').forEach(setupEmailChipInput);
+
+function sendVerificationMail(btn) {
+    var statusEl = btn.parentElement.querySelector('.bank-breakdown-status');
+    var csrfToken = document.querySelector('#verify-form [name=csrfmiddlewaretoken]').value;
+    var originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'bank-breakdown-status'; }
+
+    var body = new URLSearchParams();
+    body.set('csrfmiddlewaretoken', csrfToken);
+    body.set('contact_id', btn.getAttribute('data-contact-id'));
+    body.set('bank_name', btn.getAttribute('data-bank-name'));
+    body.set('filename', btn.getAttribute('data-filename'));
+    body.set('xlsx_b64', btn.getAttribute('data-xlsx-b64'));
+
+    fetch('{% url "core:verification_send_mail" %}', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        body: body,
+    })
+        .then(function (resp) { return resp.json().then(function (data) { return { ok: resp.ok, data: data }; }); })
+        .then(function (result) {
+            btn.disabled = false;
+            btn.textContent = originalText;
+            if (!statusEl) { return; }
+            if (result.ok && result.data.success) {
+                statusEl.textContent = '✓ Sent';
+                statusEl.className = 'bank-breakdown-status status-ok';
+                statusEl.title = result.data.message;
+            } else {
+                statusEl.textContent = '✗ ' + (result.data.message || 'Send failed');
+                statusEl.className = 'bank-breakdown-status status-error';
+            }
+        })
+        .catch(function (err) {
+            btn.disabled = false;
+            btn.textContent = originalText;
+            if (statusEl) {
+                statusEl.textContent = '✗ ' + err;
+                statusEl.className = 'bank-breakdown-status status-error';
+            }
+        });
+}
 </script>
 {% endblock %}

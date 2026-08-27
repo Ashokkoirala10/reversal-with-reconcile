@@ -1,9 +1,14 @@
 """
 Django settings for reversal_project.
 """
+import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+load_dotenv(BASE_DIR / ".env")
 
 # --- Security ---------------------------------------------------------
 # Change this before deploying anywhere outside your own machine.
@@ -66,11 +71,11 @@ DATABASES = {
 # DATABASES = {
 #     "default": {
 #         "ENGINE": "django.db.backends.postgresql",
-#         "NAME": "reversal_db",
-#         "USER": "postgres",
-#         "PASSWORD": "ashok",
-#         "HOST": "localhost",
-#         "PORT": "5432",
+#         "NAME": os.environ.get("POSTGRES_DB", "reversal_db"),
+#         "USER": os.environ.get("POSTGRES_USER", "postgres"),
+#         "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
+#         "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
+#         "PORT": os.environ.get("POSTGRES_PORT", "5432"),
 #     }
 # }
 AUTH_PASSWORD_VALIDATORS = [
@@ -103,3 +108,31 @@ LOGOUT_REDIRECT_URL = "core:login"
 # Max upload size the ibft-transaction file can reasonably be (50 MB)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024
+
+# --- SMTP (Extra page > "Verification format" tab's per-bank "Send mail") -
+# Loaded from .env (see .env.example) — never hardcode credentials here.
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = os.environ.get("SMTP_HOST", "")
+EMAIL_PORT = int(os.environ.get("SMTP_PORT", "587"))
+EMAIL_HOST_USER = os.environ.get("SMTP_USERNAME", "")
+EMAIL_HOST_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+_smtp_encryption = os.environ.get("SMTP_ENCRYPTION", "tls").strip().lower()
+EMAIL_USE_TLS = _smtp_encryption == "tls"
+EMAIL_USE_SSL = _smtp_encryption == "ssl"
+DEFAULT_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", EMAIL_HOST_USER)
+
+# Signature block appended to a verification email's body (see
+# core/services.py:build_verification_email). Department/company are
+# app-wide defaults; leave MAIL_SIGNATURE_PHONE/ADDRESS unset to omit those
+# lines rather than showing one person's contact details for every sender.
+# MAIL_SIGNATURE_NAME overrides the logged-in user's name on the "Regards,"
+# line — set it when one person's signature (not each sender's own name) is
+# what banks expect to see on these verification requests; leave unset to
+# fall back to request.user.get_full_name() / username instead.
+MAIL_SIGNATURE_NAME = os.environ.get("MAIL_SIGNATURE_NAME", "")
+MAIL_SIGNATURE_TITLE = os.environ.get("MAIL_SIGNATURE_TITLE", "Tech Operation Department")
+MAIL_SIGNATURE_COMPANY = os.environ.get("MAIL_SIGNATURE_COMPANY", "Smart Choice Technologies Ltd. (SCT)")
+MAIL_SIGNATURE_PHONE = os.environ.get("MAIL_SIGNATURE_PHONE", "")
+MAIL_SIGNATURE_ADDRESS = os.environ.get("MAIL_SIGNATURE_ADDRESS", "")
+MAIL_SIGNATURE_TOLL_FREE = os.environ.get("MAIL_SIGNATURE_TOLL_FREE", "")
+MAIL_SIGNATURE_WEBSITE = os.environ.get("MAIL_SIGNATURE_WEBSITE", "")

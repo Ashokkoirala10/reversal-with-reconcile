@@ -28,6 +28,7 @@ from typing import Any
 
 import openpyxl
 import pdfplumber
+import xlrd
 
 from core.services import ProcessingError, _read_bank_statement_rows  # noqa: F401 (re-exported for convenience)
 
@@ -144,18 +145,43 @@ def _rows_from_withdraw_deposit_table(header: list[str], data_rows) -> list[dict
     return rows
 
 
+def _load_excel_rows(path: Path) -> list[list] | None:
+    """Read an Excel file's first sheet into a list of row-value lists —
+    the modern OOXML .xlsx/.xlsm format via openpyxl, or a legacy
+    pre-2007 Excel Binary .xls export via xlrd (openpyxl can only read
+    the former; some banks, e.g. ADBL, still send the latter). Returns
+    None for any other suffix, or if the file can't be opened at all."""
+    suffix = path.suffix.lower()
+    if suffix in (".xlsx", ".xlsm"):
+        try:
+            wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        except Exception:
+            return None
+        try:
+            ws = wb[wb.sheetnames[0]]
+            return [list(r) for r in ws.iter_rows(values_only=True)]
+        finally:
+            wb.close()
+    elif suffix == ".xls":
+        try:
+            wb = xlrd.open_workbook(str(path))
+        except Exception:
+            return None
+        ws = wb.sheet_by_index(0)
+        return [
+            [ws.cell_value(r, c) if ws.cell_value(r, c) != "" else None for c in range(ws.ncols)]
+            for r in range(ws.nrows)
+        ]
+    return None
+
+
 def _is_withdraw_deposit_shape(path: Path) -> list[dict] | None:
     """Returns parsed rows if `path` is the WITHDRAW/DEPOSIT/DESCRIPTION
     shape (e.g. Rastriya Banijya Bank), else None (meaning: try core's own
     ENTRY TYPE/REMARKS reader instead)."""
-    if path.suffix.lower() not in (".xlsx", ".xlsm"):
+    all_rows = _load_excel_rows(path)
+    if all_rows is None:
         return None
-    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-    try:
-        ws = wb[wb.sheetnames[0]]
-        all_rows = [list(r) for r in ws.iter_rows(values_only=True)]
-    finally:
-        wb.close()
 
     for i, raw in enumerate(all_rows):
         if raw is None:
@@ -236,8 +262,9 @@ def _normalize_adbl_headers(raw_headers) -> list[str]:
 
 def _adbl_statement_rows(path: Path) -> list[dict] | None:
     """Parse Agricultural Development Bank's (ADBL) own settlement-account
-    statement export — as .xlsx, .csv, or .pdf (ADBL sometimes only hands
-    back a PDF rather than a spreadsheet; the PDF's own per-page tables
+    statement export — as .xlsx/.xls, .csv, or .pdf (ADBL exports a legacy
+    pre-2007 Excel Binary .xls as often as a real .xlsx, and sometimes only
+    hands back a PDF rather than a spreadsheet at all; the PDF's own per-page tables
     are extracted via _pdf_table_rows() into the exact same row shape and
     fed through the same header-detection/parsing logic below, so nothing
     past that point needs to know which format it came from).
@@ -276,13 +303,10 @@ def _adbl_statement_rows(path: Path) -> list[dict] | None:
     with a bogus zero amount.
     """
     suffix = path.suffix.lower()
-    if suffix in (".xlsx", ".xlsm"):
-        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-        try:
-            ws = wb[wb.sheetnames[0]]
-            all_rows = [list(r) for r in ws.iter_rows(values_only=True)]
-        finally:
-            wb.close()
+    if suffix in (".xlsx", ".xlsm", ".xls"):
+        all_rows = _load_excel_rows(path)
+        if all_rows is None:
+            return None
     elif suffix == ".csv":
         try:
             with open(path, "r", newline="", encoding="utf-8-sig") as fh:
@@ -400,6 +424,21 @@ def read_statement_rows(path: str | Path, display_name: str = "") -> list[dict]:
     adbl_rows = _adbl_statement_rows(path)
     if adbl_rows is not None:
         return adbl_rows
+
+    if path.suffix.lower() == ".pdf":
+        # PDF is only understood via the ADBL table-extraction path above.
+        # If that returned None, either pdfplumber couldn't find a table on
+        # any page (e.g. a scanned/image PDF, or one with no visible cell
+        # borders) or the extracted table's headers didn't match ADBL's
+        # known columns — either way, falling through to the generic
+        # openpyxl/csv reader below would always fail (it can't open a PDF
+        # at all), so raise a clear, specific error instead.
+        raise StatementError(
+            f"'{display_name or path.name}': could not extract a recognizable table from this PDF. "
+            "PDF statements are currently only supported in Agricultural Development Bank's export "
+            "layout — check that the file isn't a scanned image and that it has visible table "
+            "borders, or re-export it as .csv/.xlsx instead."
+        )
 
     alt_rows = _is_withdraw_deposit_shape(path)
     if alt_rows is not None:

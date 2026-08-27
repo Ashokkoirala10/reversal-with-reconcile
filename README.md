@@ -270,15 +270,28 @@ synthesized the same way the reversal file itself builds it.
 
 - **SCT Network** (cross-bank, Debtor != Creditor): CR on the debtor bank's
   statement + DR on the creditor bank's statement, same Network Reference
-  Id. **On-Us** (Debtor == Creditor): a CR *and* DR both present on that
-  one bank's statement is enough — most on-us transfers never touch the
-  statement at all and are reconciled by default.
+  Id, each at the transaction's own amount. **On-Us** (Debtor == Creditor):
+  a CR *and* DR both present on that one bank's statement, each at the
+  right amount, is enough — most on-us transfers never touch the statement
+  at all and are reconciled by default.
+- **Duplicate debit/credit detection**: presence alone isn't the whole
+  check — a legitimate transfer posts **exactly one** matching CR and
+  **exactly one** matching DR for its reference id and amount. If the
+  statement shows **two or more** (a settlement retried or double-posted
+  on the bank's side — the switch's own ACQ_SETTL on-us settlement rows
+  have shown this in practice), it's flagged as a **possible duplicate
+  debit/credit** for manual review instead of being silently marked
+  reconciled. Applies to SCT on-us, SCT cross-bank, and the NCHL/Khalti
+  direct reference-id-tagged settlement path alike; any count above one is
+  caught (double, triple, or more), with the exact counts named in the
+  flag reason.
 - **NCHL / Khalti**: these settle through the issuing bank's own statement,
   but the CR/DR legs don't share a Network Reference Id — matched instead
   by beneficiary name + masked settlement account anchors (or a direct
-  reference-id-tagged settlement line, where present). A transaction that
-  settled and was **later reversed** is labeled "Settled then Reversed" and
-  still counted as reconciled — it's a legitimate, complete outcome, not a
+  reference-id-tagged settlement line, where present, which is also
+  subject to the duplicate-leg check above). A transaction that settled
+  and was **later reversed** is labeled "Settled then Reversed" and still
+  counted as reconciled — it's a legitimate, complete outcome, not a
   problem.
 - **FAILED rows**: checked against the statement in case they actually
   went through despite the FAILED status (flagged for review if so). If
@@ -320,13 +333,21 @@ automatically per bank (`reconcile/statements.py`):
 - Rastriya Banijya Bank's WITHDRAW/DEPOSIT/DESCRIPTION column layout.
 - Garima Bikas Bank's MainCode/TranDate/Desc1-5/Type/Amount/TranId layout.
 - Agricultural Development Bank's (ADBL) raw core-banking ledger export —
-  as `.xlsx`, `.csv`, **or `.pdf`** (its tables are extracted page-by-page).
+  as `.xlsx`, legacy `.xls` (pre-2007 Excel Binary — ADBL sends this as
+  often as a real `.xlsx`, read via `xlrd` since `openpyxl` can't open
+  it), `.csv`, **or `.pdf`** (its tables are extracted page-by-page).
 
-A statement that fails to parse, comes back with fewer than 5 rows, or
-doesn't reference a single one of this run's own transactions anywhere in
-its remarks is treated as **unavailable for this run** (with a warning
-shown) rather than risking every one of its transactions being wrongly
-flagged — it lands on the "No Statement" sheet instead.
+A statement that fails to parse (including an unsupported/unreadable file
+format, e.g. uploading a `.pdf` where a bank's parser only understands
+`.xlsx`/`.csv`), comes back with fewer than 5 rows, or doesn't reference a
+single one of this run's own transactions anywhere in its remarks is
+treated as **unavailable for this run** rather than risking every one of
+its transactions being wrongly flagged — it lands on the "No Statement"
+sheet instead. Every such exclusion is recorded as a **warning**, shown
+right on the result page (and as a "⚠ N warnings" badge on the run's "My
+activity" card) — not just buried in the generated report's own Warnings
+sheet — so an excluded statement is never silently invisible on the site
+itself.
 
 ### Report & dashboard
 
@@ -367,3 +388,9 @@ The Reconcile audit log is likewise embedded on the shared Audit Log page
   since different banks embed them differently (smooshed against account
   numbers, joined with `|` instead of `/` or `:`) and the switch's id
   format isn't guaranteed to stay the same length forever.
+- An unreadable/wrong-format upload (transaction file *or* any bank
+  statement) no longer crashes the page with a raw Django error — every
+  `openpyxl`/`xlrd` open is caught and turned into the same clean
+  in-page error (transaction file) or per-bank warning (statement) the
+  rest of this section describes, so a bad upload never surfaces as a
+  500.
