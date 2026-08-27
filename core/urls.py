@@ -11,6 +11,31 @@ urlpatterns = [
     path("", views.upload_view, name="upload"),
     path("bank-statement/", views.bank_statement_upload_view, name="bank_statement_upload"),
     path("bank-statement/add-bank/", views.add_bank_account_view, name="add_bank_account"),
+    path(
+        "bank-statement/verification-format/add-contact/",
+        views.add_verification_bank_contact_view,
+        name="add_verification_bank_contact",
+    ),
+    path(
+        "bank-statement/verification-format/update-contact/<int:contact_id>/",
+        views.update_verification_bank_contact_view,
+        name="update_verification_bank_contact",
+    ),
+    path(
+        "bank-statement/verification-format/add-signature/",
+        views.add_mail_signature_view,
+        name="add_mail_signature",
+    ),
+    path(
+        "bank-statement/verification-format/update-signature/<int:signature_id>/",
+        views.update_mail_signature_view,
+        name="update_mail_signature",
+    ),
+    path(
+        "bank-statement/verification-format/send-mail/",
+        views.verification_send_mail_view,
+        name="verification_send_mail",
+    ),
     path("bank-statement/create-user/", views.create_user_view, name="create_user"),
     path("bank-statement/delete-user/<int:user_id>/", views.delete_user_view, name="delete_user"),
     path("bank-statement/update-user/<int:user_id>/", views.update_user_view, name="update_user"),

@@ -121,9 +121,9 @@
                                     {% csrf_token %}
                                     <input type="hidden" name="next" value="{{ request.get_full_path }}">
                                     {% if log.passed %}
-                                        <button type="submit" class="btn btn-sm btn-toggle-on">&#10003; Passed</button>
+                                        <button type="submit" class="btn btn-xs btn-toggle-on">&#10003; Passed</button>
                                     {% else %}
-                                        <button type="submit" class="btn btn-sm btn-secondary">Mark passed</button>
+                                        <button type="submit" class="btn btn-xs btn-secondary">Mark passed</button>
                                     {% endif %}
                                 </form>
                             {% else %}
@@ -131,7 +131,7 @@
                             {% endif %}
                         </div>
                     </div>
-                    <div class="activity-box-item" style="grid-column: 1 / -1;">
+                    <div class="activity-box-item">
                         <div class="k">Bank statement</div>
                         <div class="v">
                             {% if log.status == "SUCCESS" and log.generated_file %}
@@ -140,7 +140,7 @@
                                         &#10003; Checked{% if log.failed_credited_count or log.already_reversed_count %} ({{ log.failed_credited_count }}+{{ log.already_reversed_count }} flagged){% endif %}
                                     </span>
                                 {% else %}
-                                    <a class="btn btn-sm btn-secondary" href="{% url 'core:bank_statement_upload' %}">Check</a>
+                                    <a class="btn btn-xs btn-secondary" href="{% url 'core:bank_statement_upload' %}">Check</a>
                                 {% endif %}
                             {% else %}
                                 <span class="muted">—</span>

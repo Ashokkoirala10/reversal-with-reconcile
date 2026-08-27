@@ -49,7 +49,13 @@ def _find_header_row(ws) -> tuple[int, dict[str, int]]:
 def load_transactions(path: str | Path) -> list[dict]:
     """Returns a list of dicts, one per transaction row, keyed by the
     original column names."""
-    wb = openpyxl.load_workbook(path, data_only=True)
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True)
+    except Exception as exc:
+        raise TransactionFileError(
+            f"Could not open the uploaded transaction file as an Excel file (.xlsx) — {exc}. "
+            "Please upload the original TransactionReport / ibft-transaction export."
+        ) from exc
     try:
         ws = None
         for name in SOURCE_SHEET_NAME_CANDIDATES:

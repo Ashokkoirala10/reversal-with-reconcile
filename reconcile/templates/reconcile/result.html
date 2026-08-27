@@ -7,6 +7,17 @@
     <h2>Reconciliation complete</h2>
     <p class="muted" style="margin-top:-6px;">{{ run.transaction_filename }} &middot; {{ run.created_at|date:"Y-m-d H:i" }}</p>
 
+    {% if run.warnings %}
+        <div class="error-box" style="background:#fffbeb; border-color:#fcd34d; color:#92400e;">
+            <strong>{{ run.warnings|length }} statement warning{{ run.warnings|pluralize }} — some statements were not used in this run:</strong>
+            <ul style="margin:8px 0 0; padding-left:20px;">
+                {% for w in run.warnings %}
+                    <li>{{ w }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    {% endif %}
+
     {% if run.passed %}
         <div class="info-box">
             &#10003; Marked as <strong>passed</strong> by {{ run.passed_by }} on {{ run.passed_at|date:"Y-m-d H:i" }}.
@@ -174,7 +185,15 @@
 
     <div class="field" style="margin-top:16px;">
         <h3>Statements</h3>
-        <p>{{ run.statements_uploaded|length }} uploaded &middot; {{ run.statements_missing|length }} missing</p>
+        <p>
+            {{ statements_uploaded_labels|length }} used &middot; {{ statements_missing_labels|length }} missing
+        </p>
+        {% if statements_uploaded_labels %}
+            <p class="muted" style="margin-top:4px;"><strong>Used:</strong> {{ statements_uploaded_labels|join:", " }}</p>
+        {% endif %}
+        {% if statements_missing_labels %}
+            <p class="muted" style="margin-top:4px;"><strong>Missing/excluded:</strong> {{ statements_missing_labels|join:", " }}</p>
+        {% endif %}
     </div>
 
     <a class="btn btn-secondary" href="{% url 'reconcile:reconcile' %}" style="display:inline-block; margin-top:20px;">Run another reconciliation</a>

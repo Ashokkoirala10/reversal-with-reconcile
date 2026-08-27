@@ -19,21 +19,61 @@ suffix (see _narration_prefix() below for why).
 SCT_NETWORK / NCHL_NETWORK / KHALTI_NETWORK — SUCCESS rows
 ------------------------------------------------------------
 Every SUCCESS row is checked for real — success is never assumed just
-because the switch says so, on-us or off-us alike:
+because the switch says so, on-us or off-us alike. A matching CR/DR
+*presence* is necessary but no longer sufficient: the entry's own AMOUNT
+must also match what's actually expected for that network (see
+_expected_statement_amount() below) — the reference id alone can't tell
+two different transactions to the same account apart, but the amount can.
   - SCT cross-bank (Debtor != Creditor): CR on the Debtor's own
     statement, DR on the Creditor's own statement, same Network
-    Reference Id (core.services.statement_entries_for_reference()).
+    Reference Id (core.services.statement_entries_for_reference()), each
+    for the transaction's own amount exactly — SCT itself carries no fee
+    of its own, so the statement leg amount equals the Transaction
+    Amount 1:1. Confirmed against real ADBL / Rastriya Banijya / Garima
+    exports (see reconcile/statements.py — these three hand back
+    manually-requested statements in their own, bank-specific column
+    layouts rather than the common portal export, but all of them
+    already parse down to a plain numeric AMOUNT per row, so the same
+    equality check applies to them unchanged).
   - SCT on-us (Debtor == Creditor): most on-us transfers never touch the
     statement at all — normal, no CR/DR expected, reconciled. If the
-    reference id *does* show up, the rule is simply: a CR entry AND a DR
-    entry both present — that's it, no special-casing for ACQ_SETTL
-    settlement rows or any other remarks pattern. Anything short of
-    both a CR and a DR present is flagged.
-  - NCHL / Khalti: settle through the issuing bank's own statement, but
-    the CR and DR legs of the same payment don't share a Network
-    Reference Id or ISO id — core.services.is_already_debited_nchl() /
-    is_already_debited_khalti() match on the beneficiary name + masked
-    settlement account anchors instead.
+    reference id *does* show up, the rule is: a CR entry AND a DR entry
+    both present, *and* exactly one of each for the transaction's own
+    amount — no special-casing for ACQ_SETTL settlement rows or any
+    other remarks pattern. Anything short of that (missing leg, or both
+    legs present but neither at the right amount) is flagged — and so is
+    the opposite extreme: *more* than one CR or DR at that exact amount
+    (see _count_matching()). A real transfer posts each leg once; two
+    matching DRs (or two matching CRs) for the same reference id and
+    amount means the bank posted a leg twice — a genuine double-debit/
+    double-credit risk that a plain "is it there at all" presence check
+    would silently wave through as reconciled. Same duplicate-count rule
+    applies to the cross-bank SCT case (CR count on the debtor's
+    statement, DR count on the creditor's) and to the NCHL/Khalti direct
+    reference-id-tagged settlement path below.
+  - NCHL / Khalti: settle through the issuing bank's own statement. The
+    fast path is the same reference id showing up on both a CR and a DR
+    leg — but unlike SCT, the DR (settlement) leg is never the same
+    amount as the CR (collection) leg, because both networks bake their
+    own charge into it:
+      - Khalti nets its own Rs. 10 charge out of the transaction amount
+        (which already includes it, customer-side) before settling with
+        us — so the DR leg equals Transaction Amount - 10.
+      - NCHL's Transaction Amount also already has a flat Rs. 10 charge
+        baked into it customer-side, same as Khalti's — but that Rs. 10
+        is NOT what NCHL itself deducts. NCHL instead backs that Rs. 10
+        out to get the base amount, applies its own tiered real-time
+        settlement charge to *that* — Rs. 2 up to Rs. 500, Rs. 4 from
+        Rs. 501-5,000, Rs. 8 from Rs. 5,001-20,00,000 — and adds it back
+        on top of the same base amount, so the DR leg equals (Transaction
+        Amount - 10) + that tier's charge (e.g. Transaction Amount Rs.
+        310 -> base Rs. 300 -> Rs. 302 DR; Transaction Amount Rs. 4,010
+        -> base Rs. 4,000 -> Rs. 4,004 DR).
+    See _expected_statement_amount() / _nchl_charge(). If the CR+DR pair
+    isn't found at the right amounts this way, the anchor-matching
+    fallback (core.services.is_already_debited_nchl() /
+    is_already_debited_khalti(), matching on beneficiary name + masked
+    settlement account instead of amount) is still tried as-is.
   - Internal settlement bookkeeping rows (Member Transaction Id like
     "KHALTI_SETTL/00000000PLR6") are excluded from SCT stats entirely —
     see _SETTLEMENT_ARTIFACT_RE below.
@@ -43,9 +83,11 @@ FAILED rows
 For every FAILED row (from the transaction file):
   1. Already-succeeded pre-check (see _already_succeeded()) — if the
      statement shows this actually completed (on-us CR+DR / NCHL /
-     Khalti / off-us cross-bank CR+DR), that's flagged for review — a
-     reversal being needed at all conflicts with evidence the transfer
-     went through.
+     Khalti / off-us cross-bank CR+DR, each now also gated on the entry's
+     own AMOUNT matching what SUCCESS would show — same rule as the
+     SUCCESS-row check above), that's flagged for review — a reversal
+     being needed at all conflicts with evidence the transfer went
+     through.
   2. is_failed_but_credited() — if the debtor's statement shows no CR at
      all, this is a clean, ordinary failure: nothing moved, nothing to
      do — reconciled (per instruction: "if not CR then it's failed, it
@@ -59,12 +101,19 @@ Manual reversal rows (Overall Status == REVERSAL, is_manual_reversal())
 -------------------------------------------------------------------------
 The money needs to go back to the customer. The debtor's statement is
 searched for DR entries containing the expected refund Narration prefix
-(see _narration_prefix()):
+(see _narration_prefix()). Unlike the SUCCESS-side settlement checks, a
+refund is always expected at the plain original Transaction Amount — no
+network charge math — since the whole point of a refund is giving back
+exactly what was taken:
   - Zero matches: core's general is_already_reversed() / NCHL / Khalti
     checks are tried as a fallback (the refund may have gone out through
     the automated ISO/anchor path rather than a manually narrated
-    payment). Still nothing -> Need To Reversal (pending).
-  - Exactly one match: reconciled — reversed properly, once.
+    payment), also gated on that same expected amount. Still nothing ->
+    Need To Reversal (pending).
+  - Exactly one match: reconciled if its own AMOUNT also equals the
+    transaction amount — reversed properly, once, for the right amount.
+    If the amount doesn't match, flagged as an **amount mismatch**
+    instead of silently reconciled.
   - Two or more matches: flagged as a possible **double reversal** — the
     customer may have been refunded twice.
 
@@ -72,7 +121,8 @@ System reversal rows (Overall Status == REVERSAL, not manual)
 -----------------------------------------------------------------
 Checked with the same already-succeeded logic as above — on-us CR+DR,
 NCHL/Khalti anchor match, or off-us cross-bank CR+DR (all three, if the
-relevant statement(s) are available). If the transaction already
+relevant statement(s) are available), each gated on the entry's own
+AMOUNT matching what SUCCESS would show. If the transaction already
 completed successfully despite a system reversal being issued against
 it, that's flagged for review (mirrors core's own red-flag treatment on
 the "Onus Checked-System Reversal" sheet) — otherwise it's a normal,
@@ -179,6 +229,93 @@ def _entry_types(entries: list[dict]) -> tuple[bool, bool]:
     has_cr = any((e.get("entry_type") or "").strip().upper() == "CR" for e in entries)
     has_dr = any((e.get("entry_type") or "").strip().upper() == "DR" for e in entries)
     return has_cr, has_dr
+
+
+# Floating-point slack only (paisa rounding) — not a tolerance for genuine
+# amount discrepancies, which is exactly what this comparison exists to catch.
+AMOUNT_TOLERANCE = 0.01
+
+# Khalti nets its own charge out of the transaction amount (which already
+# includes it, customer-side) before settling with us in real time.
+KHALTI_SETTLEMENT_CHARGE = 10.0
+
+# NCHL's Transaction Amount, same as Khalti's, already has a flat Rs. 10
+# charge baked into it customer-side (e.g. a real base payment of Rs. 300
+# shows up as a Transaction Amount of Rs. 310) — but unlike Khalti, this
+# is NOT what NCHL itself deducts. NCHL's own tiered real-time settlement
+# charge (_NCHL_CHARGE_TIERS below) is computed off the *base* amount
+# (Transaction Amount minus this Rs. 10) and added back on top of that
+# same base amount — see _expected_statement_amount().
+NCHL_INCLUDED_CHARGE = 10.0
+
+# NCHL's own real-time settlement charge tiers, upper bound inclusive (the
+# last one has no upper bound) — computed off the base amount (Transaction
+# Amount with NCHL_INCLUDED_CHARGE backed out first) and added on top of
+# that same base amount when NCHL debits our global statement.
+_NCHL_CHARGE_TIERS: tuple[tuple[float | None, float], ...] = (
+    (500, 2.0),
+    (5000, 4.0),
+    (2_000_000, 8.0),
+)
+
+
+def _nchl_charge(base_amount: float) -> float:
+    """NCHL's tiered real-time settlement charge for `base_amount` (the
+    Transaction Amount with NCHL_INCLUDED_CHARGE already backed out) —
+    Rs. 2 up to Rs. 500, Rs. 4 from Rs. 501-5,000, Rs. 8 from Rs.
+    5,001-20,00,000 (and above, in practice — no higher tier has been
+    specified)."""
+    for upper, charge in _NCHL_CHARGE_TIERS:
+        if upper is None or base_amount <= upper:
+            return charge
+    return _NCHL_CHARGE_TIERS[-1][1]
+
+
+def _expected_statement_amount(amount: float, network: str) -> float:
+    """The amount actually expected on the settlement (DR) leg of a
+    SUCCESS row's statement entry, per network — see the module docstring
+    for why SCT, Khalti, and NCHL each differ here. The CR (collection)
+    leg is always the raw transaction amount regardless of network.
+
+    NCHL example: Transaction Amount Rs. 310 (base Rs. 300 + the Rs. 10
+    NCHL_INCLUDED_CHARGE already baked in) -> base Rs. 300 falls in the
+    "up to Rs. 500" tier (Rs. 2) -> expected DR = 300 + 2 = Rs. 302.
+    Transaction Amount Rs. 4,010 -> base Rs. 4,000 falls in the
+    "Rs. 501-5,000" tier (Rs. 4) -> expected DR = 4,000 + 4 = Rs. 4,004.
+    """
+    if network == KHALTI:
+        return amount - KHALTI_SETTLEMENT_CHARGE
+    if network == NCHL:
+        base_amount = amount - NCHL_INCLUDED_CHARGE
+        return base_amount + _nchl_charge(base_amount)
+    return amount
+
+
+def _count_matching(entries: list[dict], entry_type: str, expected_amount: float) -> int:
+    """Number of entries of `entry_type` ('CR'/'DR') in `entries` whose
+    AMOUNT matches `expected_amount` within floating-point tolerance.
+
+    A legitimate single transfer should post exactly one such entry per
+    leg — a count of 2 or more means the statement shows the same amount,
+    for the same reference id, debited/credited more than once (e.g. a
+    settlement retried or double-posted on the bank's side). That's a
+    real money-risk anomaly a plain presence check can't see, so callers
+    that only ask "is it there at all" (_amount_matches_type below) are
+    blind to it — see the on-us/off-us SCT and NCHL/Khalti SUCCESS checks
+    in reconcile(), which flag on count > 1 instead of just count > 0."""
+    count = 0
+    for entry in entries:
+        if (entry.get("entry_type") or "").strip().upper() != entry_type:
+            continue
+        if abs(_to_float(entry.get("amount")) - expected_amount) <= AMOUNT_TOLERANCE:
+            count += 1
+    return count
+
+
+def _amount_matches_type(entries: list[dict], entry_type: str, expected_amount: float) -> bool:
+    """True if any entry of `entry_type` ('CR'/'DR') in `entries` has an
+    AMOUNT matching `expected_amount` within floating-point tolerance."""
+    return _count_matching(entries, entry_type, expected_amount) > 0
 
 
 @dataclass
@@ -351,37 +488,55 @@ def _narration_prefix(member_transaction_id: Any) -> str:
     return f"REV{transform_member_id(member_transaction_id)}"
 
 
-def _count_dr_by_narration(index: BankStatementIndex, source: str, narration_prefix: str) -> int:
+def _dr_entries_by_narration(index: BankStatementIndex, source: str, narration_prefix: str) -> list[dict]:
     """A manual reversal is a staff member manually keying a new payment
     *back* to the original sender, typing the narration into the
     transfer's own remarks — so (unlike a system reversal, which is
     chased by ISO id) it should show up in a DR entry's REMARKS. Returns
-    how many DR entries match — 0 (not yet reversed), 1 (reversed,
-    normal), 2+ (possible double reversal — the customer may have been
-    refunded more than once)."""
+    every matching DR entry — 0 of them (not yet reversed), 1 (reversed,
+    normal — provided its own AMOUNT also matches, see _check_refund()),
+    2+ (possible double reversal — the customer may have been refunded
+    more than once)."""
     if not narration_prefix:
-        return 0
+        return []
     needle = narration_prefix.upper()
-    count = 0
+    matches = []
     for entry in index.entries:
         if (entry.get("source") or "") != source:
             continue
         if (entry.get("entry_type") or "").strip().upper() != "DR":
             continue
         if needle in (entry.get("remarks") or "").upper():
-            count += 1
-    return count
+            matches.append(entry)
+    return matches
 
 
-def _reversal_already_confirmed(index, ref_id: str, source: str, payment_processor: Any, aggregator: Any) -> bool:
+def _reversal_already_confirmed(
+    index,
+    ref_id: str,
+    source: str,
+    payment_processor: Any,
+    aggregator: Any,
+    expected_amount: float | None = None,
+) -> bool:
     """The general (non-narration) fallback dispatch — mirrors
     core.services.apply_bank_statement_to_reversal_file()'s
-    coop/imeremit/cityremit/prabhu order exactly."""
-    if is_already_reversed(index, ref_id, source):
+    coop/imeremit/cityremit/prabhu order exactly.
+
+    `expected_amount`, when given (the refund/reversal leg is always the
+    plain original transaction amount — no network charge math, unlike
+    the SUCCESS-side settlement checks), is forwarded to each underlying
+    check so a same-id-different-payment coincidence isn't mistaken for
+    this reversal having already gone out."""
+    if is_already_reversed(index, ref_id, source, expected_amount=expected_amount):
         return True
-    if is_zero_charge_network(payment_processor) and is_already_debited_nchl(index, ref_id, source):
+    if is_zero_charge_network(payment_processor) and is_already_debited_nchl(
+        index, ref_id, source, expected_amount=expected_amount
+    ):
         return True
-    if is_khalti_aggregator(aggregator, payment_processor) and is_already_debited_khalti(index, ref_id, source):
+    if is_khalti_aggregator(aggregator, payment_processor) and is_already_debited_khalti(
+        index, ref_id, source, expected_amount=expected_amount
+    ):
         return True
     return False
 
@@ -394,11 +549,16 @@ def _already_succeeded(
     uploaded_bank_keys: set[str],
     payment_processor: Any,
     aggregator: Any,
+    amount: float,
 ) -> bool:
     """Did this transaction actually complete successfully end-to-end,
     regardless of its FAILED/REVERSAL status? On-Us duplicate-DR / name
     match, NCHL/Khalti settlement anchor match, or (now also) an off-us
-    cross-bank CR+DR match when both banks' statements are available."""
+    cross-bank CR+DR match when both banks' statements are available —
+    each gated on the entry's own AMOUNT matching what SUCCESS would
+    actually show (see _expected_statement_amount()), same as the
+    SUCCESS-row check itself, so a same-reference-id-different-payment
+    coincidence isn't mistaken for this row having already succeeded."""
     if not debtor_bank:
         return False
     source = debtor_bank.key
@@ -406,27 +566,40 @@ def _already_succeeded(
     # "Already succeeded" is only actionable when the successful transaction
     # was not subsequently reversed. This is especially important for NCHL:
     # the original CR+DR settlement can remain visible even after a later
-    # reversal, and that later reversal must take precedence.
+    # reversal, and that later reversal must take precedence. The reversal
+    # leg itself is always the plain transaction amount (no network charge
+    # math) — see _reversal_already_confirmed()'s own note.
     if _reversal_already_confirmed(
-        index, ref_id, source, payment_processor, aggregator
+        index, ref_id, source, payment_processor, aggregator, expected_amount=amount
     ):
         return False
 
     if creditor_bank and debtor_bank.key == creditor_bank.key:
         onus_entries = statement_entries_for_reference(index, ref_id, source)
         has_cr, has_dr = _entry_types(onus_entries)
-        if (has_cr and has_dr) or has_duplicate_dr(index, ref_id, source) or is_onus_already_success(index, ref_id, source):
+        amount_ok = _amount_matches_type(onus_entries, "CR", amount) and _amount_matches_type(
+            onus_entries, "DR", amount
+        )
+        if (has_cr and has_dr and amount_ok) or has_duplicate_dr(index, ref_id, source) or is_onus_already_success(index, ref_id, source):
             return True
 
     if is_zero_charge_network(payment_processor):
         nchl_entries = statement_entries_for_reference(index, ref_id, source)
         has_cr, has_dr = _entry_types(nchl_entries)
-        if (has_cr and has_dr) or is_already_debited_nchl(index, ref_id, source):
+        expected_dr = _expected_statement_amount(amount, NCHL)
+        amount_ok = _amount_matches_type(nchl_entries, "CR", amount) and _amount_matches_type(
+            nchl_entries, "DR", expected_dr
+        )
+        if (has_cr and has_dr and amount_ok) or is_already_debited_nchl(index, ref_id, source, expected_amount=expected_dr):
             return True
     if is_khalti_aggregator(aggregator, payment_processor):
         khalti_entries = statement_entries_for_reference(index, ref_id, source)
         has_cr, has_dr = _entry_types(khalti_entries)
-        if (has_cr and has_dr) or is_already_debited_khalti(index, ref_id, source):
+        expected_dr = _expected_statement_amount(amount, KHALTI)
+        amount_ok = _amount_matches_type(khalti_entries, "CR", amount) and _amount_matches_type(
+            khalti_entries, "DR", expected_dr
+        )
+        if (has_cr and has_dr and amount_ok) or is_already_debited_khalti(index, ref_id, source, expected_amount=expected_dr):
             return True
 
     if creditor_bank and debtor_bank.key != creditor_bank.key:
@@ -435,7 +608,8 @@ def _already_succeeded(
             dr_entries = statement_entries_for_reference(index, ref_id, creditor_bank.key)
             has_cr, _ = _entry_types(cr_entries)
             _, has_dr = _entry_types(dr_entries)
-            if has_cr and has_dr:
+            amount_ok = _amount_matches_type(cr_entries, "CR", amount) and _amount_matches_type(dr_entries, "DR", amount)
+            if has_cr and has_dr and amount_ok:
                 return True
 
     return False
@@ -460,26 +634,51 @@ def _check_refund(
     """Shared refund-confirmation check for both 'Failed but Credited' and
     'Manual Reversal' rows (per instruction, they're treated identically):
     0 matching DR narration hits -> try core's general fallback, then
-    pending; exactly 1 -> reconciled; 2+ -> possible double reversal,
-    flagged for review. Every outcome is recorded on the Need To Reversal
-    sheet (not just pending/flagged ones) so it reads as a full audit
-    trail of what happened to each reversal candidate."""
-    count = _count_dr_by_narration(index, source, narration_prefix)
+    pending; exactly 1 -> reconciled if its own AMOUNT also matches the
+    original transaction amount (the refund is always the plain amount —
+    no network charge math, unlike the SUCCESS-side settlement check —
+    since the whole point of a refund is giving back exactly what was
+    taken), otherwise flagged as an amount mismatch; 2+ -> possible double
+    reversal, flagged for review. Every outcome is recorded on the Need To
+    Reversal sheet (not just pending/flagged ones) so it reads as a full
+    audit trail of what happened to each reversal candidate."""
+    entries = _dr_entries_by_narration(index, source, narration_prefix)
+    count = len(entries)
 
     if count == 1:
-        stat.reconciled += 1
-        need_reversal.append(
-            NeedReversalRow(
-                source=f"{source_label} - Reversed",
-                status="Reconciled",
-                debtor=str(debtor_name or ""),
-                creditor=str(creditor_name or ""),
-                member_txn_id=member_txn_id,
-                ref_id=ref_id,
-                amount=amount,
-                detail=f"Confirmed refunded — one DR entry on {debtor_bank.display_name}'s statement matches narration prefix '{narration_prefix}'.",
+        entry_amount = _to_float(entries[0].get("amount"))
+        if abs(entry_amount - amount) <= AMOUNT_TOLERANCE:
+            stat.reconciled += 1
+            need_reversal.append(
+                NeedReversalRow(
+                    source=f"{source_label} - Reversed",
+                    status="Reconciled",
+                    debtor=str(debtor_name or ""),
+                    creditor=str(creditor_name or ""),
+                    member_txn_id=member_txn_id,
+                    ref_id=ref_id,
+                    amount=amount,
+                    detail=f"Confirmed refunded — one DR entry on {debtor_bank.display_name}'s statement matches narration prefix '{narration_prefix}' for the correct amount.",
+                )
             )
-        )
+        else:
+            stat.flagged += 1
+            need_reversal.append(
+                NeedReversalRow(
+                    source=f"{source_label} - Amount Mismatch",
+                    status="Flagged",
+                    debtor=str(debtor_name or ""),
+                    creditor=str(creditor_name or ""),
+                    member_txn_id=member_txn_id,
+                    ref_id=ref_id,
+                    amount=amount,
+                    detail=(
+                        f"One DR entry on {debtor_bank.display_name}'s statement matches narration prefix "
+                        f"'{narration_prefix}', but for Rs. {entry_amount:,.2f} instead of the transaction "
+                        f"amount Rs. {amount:,.2f}. Needs review."
+                    ),
+                )
+            )
         return
 
     if count >= 2:
@@ -499,7 +698,7 @@ def _check_refund(
         return
 
     # count == 0: try the general (non-narration) fallback dispatch
-    if _reversal_already_confirmed(index, ref_id, source, payment_processor, aggregator):
+    if _reversal_already_confirmed(index, ref_id, source, payment_processor, aggregator, expected_amount=amount):
         stat.reconciled += 1
         need_reversal.append(
             NeedReversalRow(
@@ -510,7 +709,7 @@ def _check_refund(
                 member_txn_id=member_txn_id,
                 ref_id=ref_id,
                 amount=amount,
-                detail=f"Confirmed refunded via {debtor_bank.display_name}'s general reversal/NCHL/Khalti settlement match (no narration-matching DR found, but the automated reversal path confirms it).",
+                detail=f"Confirmed refunded via {debtor_bank.display_name}'s general reversal/NCHL/Khalti settlement match for the correct amount (no narration-matching DR found, but the automated reversal path confirms it).",
             )
         )
         return
@@ -606,7 +805,7 @@ def reconcile(
                 continue
             source = debtor_bank.key
 
-            if _already_succeeded(index, ref_id, debtor_bank, creditor_bank, uploaded_bank_keys, network, aggregator):
+            if _already_succeeded(index, ref_id, debtor_bank, creditor_bank, uploaded_bank_keys, network, aggregator, amount):
                 result.failed_stat.flagged += 1
                 result.need_reversal.append(
                     NeedReversalRow(
@@ -667,13 +866,13 @@ def reconcile(
                 # manual/NCHL/Khalti reversal actually happened. In particular,
                 # a later NCHL reversal must win over the success evidence and
                 # be reported as Reconciled (Reversed).
-                manual_reversal_count = _count_dr_by_narration(
+                manual_reversal_entries = _dr_entries_by_narration(
                     index, source, _narration_prefix(member_txn_id)
                 )
                 reversal_confirmed = (
-                    manual_reversal_count > 0
+                    len(manual_reversal_entries) > 0
                     or _reversal_already_confirmed(
-                        index, ref_id, source, network, aggregator
+                        index, ref_id, source, network, aggregator, expected_amount=amount
                     )
                 )
 
@@ -685,6 +884,7 @@ def reconcile(
                     uploaded_bank_keys,
                     network,
                     aggregator,
+                    amount,
                 ):
                     result.manual_reversal_stat.flagged += 1
                     result.need_reversal.append(
@@ -719,7 +919,7 @@ def reconcile(
                 )
             else:
                 result.system_reversal_stat.total += 1
-                already = _already_succeeded(index, ref_id, debtor_bank, creditor_bank, uploaded_bank_keys, network, aggregator)
+                already = _already_succeeded(index, ref_id, debtor_bank, creditor_bank, uploaded_bank_keys, network, aggregator, amount)
                 if already:
                     result.system_reversal_stat.flagged += 1
                     result.need_reversal.append(
@@ -802,7 +1002,45 @@ def reconcile(
                     continue
                 has_cr, has_dr = _entry_types(entries)
                 if has_cr and has_dr:
-                    pair.reconciled += 1
+                    cr_matches = _count_matching(entries, "CR", amount)
+                    dr_matches = _count_matching(entries, "DR", amount)
+                    if cr_matches and dr_matches:
+                        if cr_matches > 1 or dr_matches > 1:
+                            pair.flagged += 1
+                            result.sct_flagged.append(
+                                FlaggedRow(
+                                    network="SCT (On-Us)",
+                                    debtor=str(debtor_name or ""),
+                                    creditor=str(creditor_name or ""),
+                                    member_txn_id=member_txn_id,
+                                    ref_id=ref_id,
+                                    amount=amount,
+                                    reason=(
+                                        f"Found {cr_matches} CR and {dr_matches} DR entries on "
+                                        f"{debtor_bank.display_name}'s statement all matching the transaction "
+                                        f"amount (Rs. {amount:,.2f}) — expected exactly one of each. Possible "
+                                        "duplicate debit/credit — please verify manually before treating this as reconciled."
+                                    ),
+                                )
+                            )
+                        else:
+                            pair.reconciled += 1
+                    else:
+                        pair.flagged += 1
+                        result.sct_flagged.append(
+                            FlaggedRow(
+                                network="SCT (On-Us)",
+                                debtor=str(debtor_name or ""),
+                                creditor=str(creditor_name or ""),
+                                member_txn_id=member_txn_id,
+                                ref_id=ref_id,
+                                amount=amount,
+                                reason=(
+                                    "CR and DR entries found but neither matches the transaction amount "
+                                    f"(expected Rs. {amount:,.2f})."
+                                ),
+                            )
+                        )
                 else:
                     pair.flagged += 1
                     reason = (
@@ -851,7 +1089,47 @@ def reconcile(
             _, has_dr = _entry_types(dr_entries)
 
             if has_cr and has_dr:
-                pair.reconciled += 1
+                cr_matches = _count_matching(cr_entries, "CR", amount)
+                dr_matches = _count_matching(dr_entries, "DR", amount)
+                if cr_matches and dr_matches:
+                    if cr_matches > 1 or dr_matches > 1:
+                        pair.flagged += 1
+                        result.sct_flagged.append(
+                            FlaggedRow(
+                                network="SCT",
+                                debtor=str(debtor_name or ""),
+                                creditor=str(creditor_name or ""),
+                                member_txn_id=member_txn_id,
+                                ref_id=ref_id,
+                                amount=amount,
+                                reason=(
+                                    f"Found {cr_matches} CR entries on {debtor_bank.display_name} and "
+                                    f"{dr_matches} DR entries on {creditor_bank.display_name}, all matching "
+                                    f"the transaction amount (Rs. {amount:,.2f}) — expected exactly one of "
+                                    "each. Possible duplicate debit/credit — please verify manually before "
+                                    "treating this as reconciled."
+                                ),
+                            )
+                        )
+                    else:
+                        pair.reconciled += 1
+                else:
+                    pair.flagged += 1
+                    result.sct_flagged.append(
+                        FlaggedRow(
+                            network="SCT",
+                            debtor=str(debtor_name or ""),
+                            creditor=str(creditor_name or ""),
+                            member_txn_id=member_txn_id,
+                            ref_id=ref_id,
+                            amount=amount,
+                            reason=(
+                                f"CR found on {debtor_bank.display_name} and DR found on "
+                                f"{creditor_bank.display_name}, but neither matches the transaction amount "
+                                f"(expected Rs. {amount:,.2f})."
+                            ),
+                        )
+                    )
             else:
                 pair.flagged += 1
                 if has_cr and not has_dr:
@@ -903,20 +1181,50 @@ def reconcile(
             entries = statement_entries_for_reference(index, ref_id, source)
             has_cr, has_dr = _entry_types(entries)
 
+            # The CR (collection) leg is always the raw transaction
+            # amount; the DR (settlement) leg is the network's own charge
+            # applied to it — netted out for Khalti, added on top for
+            # NCHL (tiered) — see _expected_statement_amount().
+            expected_dr_amount = _expected_statement_amount(amount, network)
+            cr_matches = _count_matching(entries, "CR", amount)
+            dr_matches = _count_matching(entries, "DR", expected_dr_amount)
+            amount_matched = cr_matches > 0 and dr_matches > 0
+            duplicate_legs = amount_matched and (cr_matches > 1 or dr_matches > 1)
+
             # Primary signal, same as everything else: CR + DR present for
-            # this exact reference id, that's it. NCHL/Khalti settlement
-            # doesn't always use an anonymous name+account-anchored DR —
-            # plenty of it is tagged with the same reference id directly
-            # (e.g. a "CIPS/SCT-<ref id>" settlement line) — so check for
-            # that first and only fall back to the anchor-matching anchor
-            # functions if it isn't directly tagged this way.
-            settled = (has_cr and has_dr) or (
-                is_already_debited_nchl(index, ref_id, source)
+            # this exact reference id at the right amounts — that's it.
+            # NCHL/Khalti settlement doesn't always use an anonymous
+            # name+account-anchored DR — plenty of it is tagged with the
+            # same reference id directly (e.g. a "CIPS/SCT-<ref id>"
+            # settlement line) — so check for that first and only fall
+            # back to the anchor-matching functions (which match on
+            # beneficiary name + masked settlement account rather than
+            # amount) if it isn't directly tagged this way.
+            settled = (has_cr and has_dr and amount_matched and not duplicate_legs) or (
+                is_already_debited_nchl(index, ref_id, source, expected_amount=expected_dr_amount)
                 if network == NCHL
-                else is_already_debited_khalti(index, ref_id, source)
+                else is_already_debited_khalti(index, ref_id, source, expected_amount=expected_dr_amount)
             )
 
-            if settled:
+            if duplicate_legs:
+                stat.flagged += 1
+                flagged_list.append(
+                    FlaggedRow(
+                        network=label,
+                        debtor=str(debtor_name or ""),
+                        creditor=str(creditor_name or ""),
+                        member_txn_id=member_txn_id,
+                        ref_id=ref_id,
+                        amount=amount,
+                        reason=(
+                            f"Found {cr_matches} CR and {dr_matches} DR entries on {debtor_bank.display_name}'s "
+                            f"statement all matching this reference id's expected amounts (CR Rs. {amount:,.2f}, "
+                            f"DR Rs. {expected_dr_amount:,.2f}) — expected exactly one of each. Possible "
+                            "duplicate debit/credit — please verify manually before treating this as reconciled."
+                        ),
+                    )
+                )
+            elif settled:
                 # Two distinct, both-legitimate outcomes once a
                 # transaction has settled (CR+DR present):
                 #   - "Already Success": it settled and stayed settled —
@@ -948,12 +1256,19 @@ def reconcile(
                     stat.reconciled += 1
             else:
                 stat.flagged += 1
-                reason = (
-                    f"CR (collection) found on {debtor_bank.display_name} but the settlement DR hasn't "
-                    "posted / matched yet — common for T+1 batch settlement, re-check against the next day's statement."
-                    if has_cr
-                    else f"No CR found on {debtor_bank.display_name} for this reference id."
-                )
+                if has_cr and has_dr and not amount_matched:
+                    reason = (
+                        f"CR and DR entries found on {debtor_bank.display_name}'s statement, but the settlement "
+                        f"amount doesn't match what's expected after the {label} charge (transaction Rs. "
+                        f"{amount:,.2f}, expected settlement Rs. {expected_dr_amount:,.2f})."
+                    )
+                elif has_cr:
+                    reason = (
+                        f"CR (collection) found on {debtor_bank.display_name} but the settlement DR hasn't "
+                        "posted / matched yet — common for T+1 batch settlement, re-check against the next day's statement."
+                    )
+                else:
+                    reason = f"No CR found on {debtor_bank.display_name} for this reference id."
                 flagged_list.append(
                     FlaggedRow(
                         network=label,

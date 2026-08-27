@@ -132,6 +132,7 @@ def reconcile_view(request):
                     uploaded_by=request.user.username if request.user.is_authenticated else "",
                     statements_uploaded=result.statements_uploaded,
                     statements_missing=result.statements_missing,
+                    warnings=result.warnings,
                     total_transactions=result.transaction_count,
                     sct_total=result.sct_total,
                     sct_reconciled=result.sct_reconciled,
@@ -192,10 +193,17 @@ def reconcile_view(request):
 @login_required
 def result_view(request, run_id):
     run = get_object_or_404(ReconcileRun, id=run_id)
+    bank_labels = {b.key: b.display_name for b in BANKS}
     return render(
         request,
         "reconcile/result.html",
-        {"run": run, "can_toggle": can_toggle_passed(request.user, run), "buckets": _run_bucket_rows(run)},
+        {
+            "run": run,
+            "can_toggle": can_toggle_passed(request.user, run),
+            "buckets": _run_bucket_rows(run),
+            "statements_uploaded_labels": [bank_labels.get(k, k) for k in run.statements_uploaded],
+            "statements_missing_labels": [bank_labels.get(k, k) for k in run.statements_missing],
+        },
     )
 
 

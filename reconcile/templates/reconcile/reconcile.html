@@ -131,14 +131,19 @@
                     <span class="activity-box-date">
                         <a href="{% url 'reconcile:result' run.id %}">{{ run.created_at|date:"Y-m-d H:i" }}</a>
                     </span>
-                    {% if run.passed %}
-                        <span class="badge badge-passed">&#10003; Passed</span>
-                    {% else %}
-                        <span class="badge badge-pending">Pending review</span>
-                    {% endif %}
+                    <span>
+                        {% if run.warnings %}
+                            <span class="badge badge-failed" title="{{ run.warnings|join:' | ' }}">&#9888; {{ run.warnings|length }} warning{{ run.warnings|pluralize }}</span>
+                        {% endif %}
+                        {% if run.passed %}
+                            <span class="badge badge-passed">&#10003; Passed</span>
+                        {% else %}
+                            <span class="badge badge-pending">Pending review</span>
+                        {% endif %}
+                    </span>
                 </div>
                 <div class="activity-box-grid">
-                    <div class="activity-box-item">
+                    <div class="activity-box-item span-full">
                         <div class="k">Files</div>
                         <div class="v file-link-group">
                             {% if run.transaction_file %}

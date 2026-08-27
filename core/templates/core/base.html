@@ -5,7 +5,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}IBFT Reversal Generator{% endblock %}</title>
-<link rel="stylesheet" href="{% static 'core/css/style.css' %}?v=5">
+<link rel="stylesheet" href="{% static 'core/css/style.css' %}?v=8">
 </head>
 <body>
 <header>
@@ -50,7 +50,7 @@
 <main class="{% block main_class %}{% endblock %}">
     {% if messages %}
         <ul class="messages">
-            {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+            {% for message in messages %}<li class="{{ message.tags }}">{{ message }}</li>{% endfor %}
         </ul>
     {% endif %}
     {% block content %}{% endblock %}
