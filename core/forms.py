@@ -72,10 +72,10 @@ class BankStatementUploadForm(forms.Form):
         empty_label="Select a generated reversal file\u2026",
     )
     global_statement_files = MultipleFileField(
-        label="Global IME Bank statement (.csv or .xlsx)",
+        label="Global IME Bank statement(s) (.csv or .xlsx)",
         required=False,
         widget=MultipleFileInput(attrs={"accept": ".csv,.xlsx", "multiple": True}),
-        help_text="Usually a single file.",
+        help_text="Up to 3 files (e.g. separate daily exports).",
     )
     prabhu_statement_files = MultipleFileField(
         label="Prabhu Bank statement(s) (.csv or .xlsx)",
@@ -105,10 +105,10 @@ class BankStatementUploadForm(forms.Form):
             )
             return cleaned
 
-        if len(global_files) > 1:
+        if len(global_files) > 3:
             self.add_error(
                 "global_statement_files",
-                "Global IME Bank statement upload supports only one file at a time.",
+                "Please upload at most 3 Global IME Bank statement files.",
             )
             return cleaned
 

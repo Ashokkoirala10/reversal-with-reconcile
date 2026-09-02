@@ -258,8 +258,8 @@ def bank_statement_upload_view(request):
                 saved_paths.append((prefix, tmp_path))
                 saved_names.append(statement.name)
 
-            # One file: used as-is. Multiple files (Global + up to 4 Prabhu
-            # exports, any combination) — dump them all into one combined
+            # One file: used as-is. Multiple files (up to 3 Global + up to 4
+            # Prabhu exports, any combination) — dump them all into one combined
             # file first (tagging each row with which bank it came from —
             # see combine_bank_statement_files()) so the rest of the
             # pipeline only ever deals with a single statement, checking

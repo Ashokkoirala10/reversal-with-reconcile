@@ -1018,12 +1018,12 @@ def _read_bank_statement_rows(path: str | Path, source: str = "") -> list[dict]:
 
 
 def combine_bank_statement_files(paths: list[str | Path], combined_path: str | Path) -> Path:
-    """Read one or more bank statement exports (.csv/.xlsx — e.g. up to 4
-    separate daily Prabhu Bank statements) and dump every row into a
-    single combined .csv file (S.N re-serialized 1, 2, 3, ... across all
-    of them), so downstream processing only ever has to open one file.
-    Global IME Bank statements normally come as a single file, but this
-    works the same way for one file too.
+    """Read one or more bank statement exports (.csv/.xlsx — e.g. up to 3
+    separate daily Global IME Bank statements, or up to 4 separate daily
+    Prabhu Bank statements) and dump every row into a single combined
+    .csv file (S.N re-serialized 1, 2, 3, ... across all of them), so
+    downstream processing only ever has to open one file. Works the same
+    way for a single file too.
 
     `paths` may be plain paths (source left blank — the pre-existing,
     untagged behavior) or (source_label, path) tuples, where source_label
