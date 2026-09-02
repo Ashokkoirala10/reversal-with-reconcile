@@ -1,6 +1,6 @@
 {% extends "core/base.html" %}
 {% block content %}
-<div class="card" style="max-width:720px; margin:0 auto; max-height:100%; overflow-y:auto;">
+<div class="card extra-page-card">
     <h2>Extra</h2>
 
     <div class="extra-tabs">
@@ -22,8 +22,8 @@
 
     <div id="extra-tab-check">
     <div class="info-box">
-        You can upload a <strong>Global IME Bank</strong> statement, a <strong>Prabhu Bank</strong> statement
-        (up to 4 files, e.g. several daily exports), or <strong>both at once</strong> 
+        You can upload a <strong>Global IME Bank</strong> statement (up to 3 files), a <strong>Prabhu Bank</strong> statement
+        (up to 4 files, e.g. several daily exports), or <strong>both at once</strong>
     </div>
 
     <form method="post" enctype="multipart/form-data" id="statement-form">
@@ -68,32 +68,27 @@
 
         <form method="post" action="{% url 'core:add_bank_account' %}" id="add-bank-form">
             {% csrf_token %}
-            <div class="field">
-                <label for="id_bank_name">{{ bank_form.bank_name.label }}</label>
-                {{ bank_form.bank_name }}
-                {% if bank_form.bank_name.errors %}<div class="error-box">{{ bank_form.bank_name.errors }}</div>{% endif %}
-            </div>
-            <div class="field">
-                <label for="id_keyword">{{ bank_form.keyword.label }}</label>
-                {{ bank_form.keyword }}
-                <p class="muted" style="font-size:12.5px; margin:6px 0 0;">
-                    Upper-cased, case-insensitive substring matched against the "Debtor Bank" column,
-                    e.g. "NICASIA" matches "NIC Asia Bank". Keep it short and specific.
-                </p>
-                {% if bank_form.keyword.errors %}<div class="error-box">{{ bank_form.keyword.errors }}</div>{% endif %}
+            <div class="field-row">
+                <div class="field">
+                    <label for="id_bank_name">{{ bank_form.bank_name.label }}</label>
+                    {{ bank_form.bank_name }}
+                    {% if bank_form.bank_name.errors %}<div class="error-box">{{ bank_form.bank_name.errors }}</div>{% endif %}
+                </div>
+                <div class="field">
+                    <label for="id_keyword">{{ bank_form.keyword.label }}</label>
+                    {{ bank_form.keyword }}
+
+                    {% if bank_form.keyword.errors %}<div class="error-box">{{ bank_form.keyword.errors }}</div>{% endif %}
+                </div>
             </div>
             <div class="field">
                 <label for="id_debit_account_number">{{ bank_form.debit_account_number.label }}</label>
                 {{ bank_form.debit_account_number }}
                 {% if bank_form.debit_account_number.errors %}<div class="error-box">{{ bank_form.debit_account_number.errors }}</div>{% endif %}
             </div>
-            <div class="field" style="display:flex; align-items:center; gap:8px;">
-                {{ bank_form.is_own_bank }}
-                <label for="id_is_own_bank" style="margin:0;">{{ bank_form.is_own_bank.label }}</label>
-            </div>
-            <div class="field" style="display:flex; align-items:center; gap:8px;">
-                {{ bank_form.is_active }}
-                <label for="id_is_active" style="margin:0;">{{ bank_form.is_active.label }}</label>
+            <div class="checkbox-row">
+                <label class="checkbox-field" for="id_is_own_bank">{{ bank_form.is_own_bank }} {{ bank_form.is_own_bank.label }}</label>
+                <label class="checkbox-field" for="id_is_active">{{ bank_form.is_active }} {{ bank_form.is_active.label }}</label>
             </div>
             <button type="submit" class="btn" style="width:100%;">Add bank account</button>
         </form>
@@ -136,32 +131,27 @@
 
         <form method="post" action="{% url 'core:create_user' %}" id="create-user-form">
             {% csrf_token %}
-            <div class="field">
-                <label for="id_username">{{ create_user_form.username.label }}</label>
-                {{ create_user_form.username }}
-                {% if create_user_form.username.errors %}<div class="error-box">{{ create_user_form.username.errors }}</div>{% endif %}
-            </div>
-            <div class="field">
-                <label for="id_email">{{ create_user_form.email.label }}</label>
-                {{ create_user_form.email }}
-                {% if create_user_form.email.errors %}<div class="error-box">{{ create_user_form.email.errors }}</div>{% endif %}
+            <div class="field-row">
+                <div class="field">
+                    <label for="id_username">{{ create_user_form.username.label }}</label>
+                    {{ create_user_form.username }}
+                    {% if create_user_form.username.errors %}<div class="error-box">{{ create_user_form.username.errors }}</div>{% endif %}
+                </div>
+                <div class="field">
+                    <label for="id_email">{{ create_user_form.email.label }}</label>
+                    {{ create_user_form.email }}
+                    {% if create_user_form.email.errors %}<div class="error-box">{{ create_user_form.email.errors }}</div>{% endif %}
+                </div>
             </div>
             <div class="field">
                 <label for="id_password">{{ create_user_form.password.label }}</label>
                 {{ create_user_form.password }}
                 {% if create_user_form.password.errors %}<div class="error-box">{{ create_user_form.password.errors }}</div>{% endif %}
             </div>
-            <div class="field" style="display:flex; align-items:center; gap:8px;">
-                {{ create_user_form.is_active }}
-                <label for="id_is_active" style="margin:0;">{{ create_user_form.is_active.label }}</label>
-            </div>
-            <div class="field" style="display:flex; align-items:center; gap:8px;">
-                {{ create_user_form.is_staff }}
-                <label for="id_is_staff" style="margin:0;">{{ create_user_form.is_staff.label }}</label>
-            </div>
-            <div class="field" style="display:flex; align-items:center; gap:8px;">
-                {{ create_user_form.is_superuser }}
-                <label for="id_is_superuser" style="margin:0;">{{ create_user_form.is_superuser.label }}</label>
+            <div class="checkbox-row">
+                <label class="checkbox-field" for="id_is_active">{{ create_user_form.is_active }} {{ create_user_form.is_active.label }}</label>
+                <label class="checkbox-field" for="id_is_staff">{{ create_user_form.is_staff }} {{ create_user_form.is_staff.label }}</label>
+                <label class="checkbox-field" for="id_is_superuser">{{ create_user_form.is_superuser }} {{ create_user_form.is_superuser.label }}</label>
             </div>
             <button type="submit" class="btn" id="create-user-submit-btn" style="width:100%;">Create user</button>
         </form>
@@ -250,8 +240,8 @@
     {% endif %}
 
     <div id="extra-tab-verify" style="display:none;">
-        <div style="display:flex; align-items:flex-start; gap:8px;">
-            <div class="info-box" style="flex:1 1 auto;">
+        <div class="verify-header-row">
+            <div class="info-box" style="flex:1 1 220px; margin-bottom:0;">
                 Upload a <strong>dispute transaction</strong> file
             </div>
             <a href="{% url 'core:bank_statement_upload' %}?tab=verify"
@@ -303,15 +293,17 @@
 
         <form method="post" action="{% url 'core:add_verification_bank_contact' %}" id="add-bank-contact-form">
             {% csrf_token %}
-            <div class="field">
-                <label for="id_bank_name">{{ bank_contact_form.bank_name.label }}</label>
-                {{ bank_contact_form.bank_name }}
-                {% if bank_contact_form.bank_name.errors %}<div class="error-box">{{ bank_contact_form.bank_name.errors }}</div>{% endif %}
-            </div>
-            <div class="field">
-                <label for="id_keyword">{{ bank_contact_form.keyword.label }}</label>
-                {{ bank_contact_form.keyword }}
-                {% if bank_contact_form.keyword.errors %}<div class="error-box">{{ bank_contact_form.keyword.errors }}</div>{% endif %}
+            <div class="field-row">
+                <div class="field">
+                    <label for="id_bank_name">{{ bank_contact_form.bank_name.label }}</label>
+                    {{ bank_contact_form.bank_name }}
+                    {% if bank_contact_form.bank_name.errors %}<div class="error-box">{{ bank_contact_form.bank_name.errors }}</div>{% endif %}
+                </div>
+                <div class="field">
+                    <label for="id_keyword">{{ bank_contact_form.keyword.label }}</label>
+                    {{ bank_contact_form.keyword }}
+                    {% if bank_contact_form.keyword.errors %}<div class="error-box">{{ bank_contact_form.keyword.errors }}</div>{% endif %}
+                </div>
             </div>
             <div class="field">
                 <label for="id_to_emails">{{ bank_contact_form.to_emails.label }}</label>
@@ -323,9 +315,8 @@
                 {{ bank_contact_form.cc_emails }}
                 {% if bank_contact_form.cc_emails.errors %}<div class="error-box">{{ bank_contact_form.cc_emails.errors }}</div>{% endif %}
             </div>
-            <div class="field" style="display:flex; align-items:center; gap:8px;">
-                {{ bank_contact_form.is_active }}
-                <label for="id_is_active" style="margin:0;">{{ bank_contact_form.is_active.label }}</label>
+            <div class="checkbox-row">
+                <label class="checkbox-field" for="id_is_active">{{ bank_contact_form.is_active }} {{ bank_contact_form.is_active.label }}</label>
             </div>
             <button type="submit" class="btn" style="width:100%;">Add bank contact</button>
         </form>
@@ -406,44 +397,49 @@
 
         <form method="post" action="{% url 'core:add_mail_signature' %}" id="add-mail-signature-form">
             {% csrf_token %}
-            <div class="field">
-                <label for="id_name">{{ mail_signature_form.name.label }}</label>
-                {{ mail_signature_form.name }}
-                {% if mail_signature_form.name.errors %}<div class="error-box">{{ mail_signature_form.name.errors }}</div>{% endif %}
+            <div class="field-row">
+                <div class="field">
+                    <label for="id_name">{{ mail_signature_form.name.label }}</label>
+                    {{ mail_signature_form.name }}
+                    {% if mail_signature_form.name.errors %}<div class="error-box">{{ mail_signature_form.name.errors }}</div>{% endif %}
+                </div>
+                <div class="field">
+                    <label for="id_title">{{ mail_signature_form.title.label }}</label>
+                    {{ mail_signature_form.title }}
+                    {% if mail_signature_form.title.errors %}<div class="error-box">{{ mail_signature_form.title.errors }}</div>{% endif %}
+                </div>
             </div>
-            <div class="field">
-                <label for="id_title">{{ mail_signature_form.title.label }}</label>
-                {{ mail_signature_form.title }}
-                {% if mail_signature_form.title.errors %}<div class="error-box">{{ mail_signature_form.title.errors }}</div>{% endif %}
+            <div class="field-row">
+                <div class="field">
+                    <label for="id_mobile">{{ mail_signature_form.mobile.label }}</label>
+                    {{ mail_signature_form.mobile }}
+                    {% if mail_signature_form.mobile.errors %}<div class="error-box">{{ mail_signature_form.mobile.errors }}</div>{% endif %}
+                </div>
+                <div class="field">
+                    <label for="id_company">{{ mail_signature_form.company.label }}</label>
+                    {{ mail_signature_form.company }}
+                    {% if mail_signature_form.company.errors %}<div class="error-box">{{ mail_signature_form.company.errors }}</div>{% endif %}
+                </div>
             </div>
-            <div class="field">
-                <label for="id_mobile">{{ mail_signature_form.mobile.label }}</label>
-                {{ mail_signature_form.mobile }}
-                {% if mail_signature_form.mobile.errors %}<div class="error-box">{{ mail_signature_form.mobile.errors }}</div>{% endif %}
-            </div>
-            <div class="field">
-                <label for="id_company">{{ mail_signature_form.company.label }}</label>
-                {{ mail_signature_form.company }}
-                {% if mail_signature_form.company.errors %}<div class="error-box">{{ mail_signature_form.company.errors }}</div>{% endif %}
-            </div>
-            <div class="field">
-                <label for="id_address">{{ mail_signature_form.address.label }}</label>
-                {{ mail_signature_form.address }}
-                {% if mail_signature_form.address.errors %}<div class="error-box">{{ mail_signature_form.address.errors }}</div>{% endif %}
-            </div>
-            <div class="field">
-                <label for="id_toll_free">{{ mail_signature_form.toll_free.label }}</label>
-                {{ mail_signature_form.toll_free }}
-                {% if mail_signature_form.toll_free.errors %}<div class="error-box">{{ mail_signature_form.toll_free.errors }}</div>{% endif %}
+            <div class="field-row">
+                <div class="field">
+                    <label for="id_address">{{ mail_signature_form.address.label }}</label>
+                    {{ mail_signature_form.address }}
+                    {% if mail_signature_form.address.errors %}<div class="error-box">{{ mail_signature_form.address.errors }}</div>{% endif %}
+                </div>
+                <div class="field">
+                    <label for="id_toll_free">{{ mail_signature_form.toll_free.label }}</label>
+                    {{ mail_signature_form.toll_free }}
+                    {% if mail_signature_form.toll_free.errors %}<div class="error-box">{{ mail_signature_form.toll_free.errors }}</div>{% endif %}
+                </div>
             </div>
             <div class="field">
                 <label for="id_website">{{ mail_signature_form.website.label }}</label>
                 {{ mail_signature_form.website }}
                 {% if mail_signature_form.website.errors %}<div class="error-box">{{ mail_signature_form.website.errors }}</div>{% endif %}
             </div>
-            <div class="field" style="display:flex; align-items:center; gap:8px;">
-                {{ mail_signature_form.is_active }}
-                <label for="id_is_active" style="margin:0;">{{ mail_signature_form.is_active.label }}</label>
+            <div class="checkbox-row">
+                <label class="checkbox-field" for="id_is_active">{{ mail_signature_form.is_active }} {{ mail_signature_form.is_active.label }}</label>
             </div>
             <button type="submit" class="btn" style="width:100%;">Add mail signature</button>
         </form>
@@ -561,14 +557,28 @@
 </div>
 {% endif %}
 <style>
-/* This page is meant to fit on one screen — the whole document should
-   never scroll, only the card's own content area (if it ever grows
-   taller than the viewport, e.g. lots of validation errors + file
-   chips) scrolls internally instead. */
-html, body { height: 100%; overflow: hidden; }
-body { display: flex; flex-direction: column; }
-header { flex: 0 0 auto; }
-main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+/* Scrolls normally with the rest of the page (like every other page in
+   the app) instead of being clamped to one viewport height — the old
+   fixed-height/hidden-overflow layout squeezed six tabs' worth of forms
+   and tables into a tiny internal scroll box on any screen shorter/
+   narrower than a full desktop window, which is exactly what made this
+   page feel cramped and broken on mobile. */
+.extra-page-card { max-width: 720px; margin: 0 auto; }
+
+.field-row {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0 16px;
+}
+.checkbox-row { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 20px; }
+.checkbox-field {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-weight: 600; font-size: 14px; color: var(--text); cursor: pointer; margin: 0;
+}
+@media (max-width: 480px) {
+    .field-row { grid-template-columns: 1fr; }
+}
+
 .file-chip-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
 .file-chip-list:empty { margin-top:0; }
 .file-chip {
@@ -590,12 +600,23 @@ main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; jus
 .email-chip-typer {
     flex:1 1 140px; min-width:140px; border:none; outline:none; font-size:13.5px; padding:4px 2px;
 }
-.extra-tabs { display:flex; gap:8px; margin-bottom:16px; border-bottom:1px solid #e5e7eb; }
+.extra-tabs {
+    display:flex; gap:4px; margin-bottom:16px; border-bottom:1px solid #e5e7eb;
+    overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
+    scrollbar-width:thin;
+}
 .extra-tab-btn {
+    flex:0 0 auto; white-space:nowrap;
     background:none; border:none; cursor:pointer; padding:8px 14px;
     font-size:14px; font-weight:600; color:#6b7280; border-bottom:2px solid transparent;
+    transition: color 0.15s ease, border-color 0.15s ease;
 }
+.extra-tab-btn:hover { color:#1D4ED8; }
 .extra-tab-btn.active { color:#1D4ED8; border-bottom-color:#1D4ED8; }
+.verify-header-row { display:flex; flex-wrap:wrap; align-items:flex-start; gap:8px; }
+@media (max-width: 480px) {
+    .extra-tab-btn { padding:8px 10px; font-size:13px; }
+}
 .download-modal-overlay {
     position:fixed; inset:0; background:rgba(15,23,42,0.55);
     display:flex; align-items:center; justify-content:center; z-index:1000;
@@ -619,10 +640,10 @@ main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; jus
 .btn-danger:hover { background:#fef2f2; }
 .bank-breakdown-list { display:flex; flex-direction:column; gap:8px; }
 .bank-breakdown-row {
-    display:flex; align-items:center; gap:10px;
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px;
     border:1px solid #e5e7eb; border-radius:8px; padding:8px 12px;
 }
-.bank-breakdown-name { flex:1 1 auto; font-weight:600; font-size:13.5px; color:#374151; }
+.bank-breakdown-name { flex:1 1 140px; min-width:0; font-weight:600; font-size:13.5px; color:#374151; overflow-wrap:anywhere; }
 .bank-breakdown-count {
     background:#eef2ff; color:#3730a3; border-radius:12px;
     padding:2px 10px; font-size:12.5px; font-weight:700;
@@ -775,7 +796,7 @@ function setupAccumulatingFileInput(inputId, chipListId, maxFiles) {
     });
 }
 
-setupAccumulatingFileInput('id_global_statement_files', 'global-chip-list', 1);
+setupAccumulatingFileInput('id_global_statement_files', 'global-chip-list', 3);
 setupAccumulatingFileInput('id_prabhu_statement_files', 'prabhu-chip-list', 4);
 
 // Turns a plain comma/semicolon-separated email text input (marked with
