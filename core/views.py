@@ -12,6 +12,7 @@ from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.contrib.staticfiles import finders
 from django.core.files import File
+from django.core.files.base import ContentFile
 from django.core.mail import EmailMultiAlternatives
 from django.core.paginator import Paginator
 from django.db.models import Count, Max, Sum
@@ -25,10 +26,13 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from . import switch_db
+from .audit import log_action, read_events, AUDIT_LOG_PATH
 from .forms import (
     BankAccountForm,
     BankStatementUploadForm,
     CreateUserForm,
+    DbFetchForm,
     MailSignatureForm,
     UpdateUserForm,
     UploadForm,
@@ -85,12 +89,37 @@ class BrandedLoginView(auth_views.LoginView):
 @login_required
 def upload_view(request):
     if request.method == "POST":
-        form = UploadForm(request.POST, request.FILES)
-        if form.is_valid():
+        mode = request.POST.get("mode", "upload")
+        form = UploadForm(request.POST, request.FILES) if mode == "upload" else UploadForm()
+        db_fetch_form = DbFetchForm(request.POST) if mode == "db_fetch" else DbFetchForm()
+
+        uploaded = None
+        source_desc = "uploaded file"
+        if mode == "db_fetch":
+            if db_fetch_form.is_valid():
+                from_date = db_fetch_form.cleaned_data["from_date"]
+                to_date = db_fetch_form.cleaned_data["to_date"]
+                try:
+                    workbook_bytes, row_count = switch_db.fetch_ibft_export(from_date, to_date)
+                except switch_db.SwitchDBError as exc:
+                    return render(
+                        request,
+                        "core/upload.html",
+                        {"form": form, "db_fetch_form": db_fetch_form, "error": str(exc), **_panel_context(request)},
+                    )
+                fetch_stamp = timezone.localtime(timezone.now())
+                date_part = f"{from_date:%Y-%m-%d}" if from_date == to_date else f"{from_date:%Y-%m-%d}_to_{to_date:%Y-%m-%d}"
+                uploaded = ContentFile(
+                    workbook_bytes, name=f"DB_Fetch_{date_part}_{fetch_stamp:%H%M%S}.xlsx"
+                )
+                source_desc = f"fetched from DB ({from_date} to {to_date})"
+        elif form.is_valid():
             uploaded = form.cleaned_data["ibft_file"]
 
+        if uploaded is not None:
             # Standardize the stored/displayed name regardless of what the
-            # file was actually called when it was uploaded.
+            # file was actually called when it was uploaded (or the name
+            # generated above for a DB fetch).
             standardized_name = build_uploaded_filename(uploaded.name)
 
             log = ProcessingLog.objects.create(
@@ -154,7 +183,7 @@ def upload_view(request):
                 return render(
                     request,
                     "core/upload.html",
-                    {"form": form, "error": str(exc), **_panel_context(request)},
+                    {"form": form, "db_fetch_form": db_fetch_form, "error": str(exc), **_panel_context(request)},
                 )
             except Exception as exc:  # noqa: BLE001 - surface unexpected errors to the audit log too
                 log.status = ProcessingLog.STATUS_FAILED
@@ -165,6 +194,7 @@ def upload_view(request):
                     "core/upload.html",
                     {
                         "form": form,
+                        "db_fetch_form": db_fetch_form,
                         "error": f"Unexpected error while processing the file: {exc}",
                         **_panel_context(request),
                     },
@@ -218,11 +248,17 @@ def upload_view(request):
                     new_refs, ignore_conflicts=True, batch_size=1000
                 )
 
+            log_action(
+                request,
+                f"Processed reversal file {source_desc}: {standardized_name} "
+                f"(#{log.id}, {log.total_rows} rows)",
+            )
             return redirect(reverse("core:result", args=[log.id]))
     else:
         form = UploadForm()
+        db_fetch_form = DbFetchForm()
 
-    return render(request, "core/upload.html", {"form": form, **_panel_context(request)})
+    return render(request, "core/upload.html", {"form": form, "db_fetch_form": db_fetch_form, **_panel_context(request)})
 
 
 @login_required
@@ -365,6 +401,10 @@ def bank_statement_upload_view(request):
                 f"{bstats.already_reversed_count} already-reversed row(s) red-flagged{nchl_note}{khalti_note}{onus_manual_note}."
                 f"{onus_success_note}{onus_sys_rev_note}",
             )
+            log_action(
+                request,
+                f"Checked {bank_label} bank statement ({', '.join(saved_names)}) against reversal file #{log.id}",
+            )
             return redirect(reverse("core:result", args=[log.id]))
     else:
         form = BankStatementUploadForm(user=request.user)
@@ -386,6 +426,13 @@ def _extra_page_context(request):
     Mail signature). Each tab's own view fills in its own form/result on
     top of this."""
     context = {"form": BankStatementUploadForm(user=request.user), "verification_form": VerificationFormatUploadForm()}
+    # "Mail signature" tab — who an outgoing email (verification "Send
+    # mail" or a reconcile issue-note "notify others" alert) is signed as
+    # (core.models.MailSignature). Per-user, not admin-only: everyone
+    # manages their own list and picks their own active one — see
+    # core.services.resolve_mail_signature().
+    context["mail_signature_form"] = MailSignatureForm()
+    context["mail_signatures"] = MailSignature.objects.filter(user=request.user)
     if is_admin(request.user):
         # "Extra" page's second tab — add-bank-account feature for Admin
         # (is_staff) users. Full CRUD on bank accounts (edit/delete) stays
@@ -399,12 +446,6 @@ def _extra_page_context(request):
         # "Verification format" tab's per-bank "Send mail" buttons.
         context["bank_contact_form"] = VerificationBankContactForm()
         context["bank_contacts"] = VerificationBankContact.objects.order_by("bank_name")
-        # "Mail signature" tab — who those "Send mail" emails are signed
-        # as (core.models.MailSignature). Editable in-app (unlike the
-        # legacy MAIL_SIGNATURE_* .env defaults it falls back to) so
-        # staff turnover doesn't need a code change.
-        context["mail_signature_form"] = MailSignatureForm()
-        context["mail_signatures"] = MailSignature.objects.all()
     if is_superadmin(request.user):
         # "Make user" tab — Admin (is_superuser) only, unlike the rest of
         # this page's tabs which just need is_staff, since it can grant
@@ -430,6 +471,7 @@ def add_bank_account_view(request):
             request,
             f"Bank account '{account.bank_name}' (keyword '{account.keyword}') added.",
         )
+        log_action(request, f"Added bank account '{account.bank_name}' (keyword '{account.keyword}')")
     else:
         for field, errors in form.errors.items():
             label = form.fields[field].label if field in form.fields else field
@@ -453,6 +495,7 @@ def add_verification_bank_contact_view(request):
             request,
             f"Bank contact '{contact.bank_name}' (keyword '{contact.keyword}') added.",
         )
+        log_action(request, f"Added verification bank contact '{contact.bank_name}' (keyword '{contact.keyword}')")
     else:
         for field, errors in form.errors.items():
             label = form.fields[field].label if field in form.fields else field
@@ -473,6 +516,7 @@ def update_verification_bank_contact_view(request, contact_id):
     if form.is_valid():
         contact = form.save()
         messages.success(request, f"Bank contact '{contact.bank_name}' updated.")
+        log_action(request, f"Updated verification bank contact '{contact.bank_name}' (#{contact.id})")
     else:
         for field, errors in form.errors.items():
             label = form.fields[field].label if field in form.fields else field
@@ -482,17 +526,21 @@ def update_verification_bank_contact_view(request, contact_id):
 
 
 @login_required
-@user_passes_test(is_admin, login_url="core:upload")
 @require_POST
 def add_mail_signature_view(request):
-    """Add a new core.models.MailSignature row from the "Extra" page's
-    "Mail signature" tab — used to sign every "Send mail" verification
-    email going forward (see resolve_mail_signature() in
-    core/services.py). Restricted to Admin (is_staff) users."""
+    """Add a new core.models.MailSignature row, owned by the logged-in
+    user, from the "Extra" page's "Mail signature" tab — used to sign
+    that same user's own outgoing emails going forward (see
+    resolve_mail_signature() in core/services.py). Any logged-in user can
+    add their own; there's no admin gate here since each person only ever
+    manages their own signatures."""
     form = MailSignatureForm(request.POST)
     if form.is_valid():
-        signature = form.save()
+        signature = form.save(commit=False)
+        signature.user = request.user
+        signature.save()
         messages.success(request, f"Mail signature '{signature.name or signature.title}' added.")
+        log_action(request, f"Added mail signature '{signature.name or signature.title}'")
     else:
         for field, errors in form.errors.items():
             label = form.fields[field].label if field in form.fields else field
@@ -502,17 +550,23 @@ def add_mail_signature_view(request):
 
 
 @login_required
-@user_passes_test(is_admin, login_url="core:upload")
 @require_POST
 def update_mail_signature_view(request, signature_id):
     """Edit an existing mail signature — the Edit button next to each row
     on the "Mail signature" tab's list. Untick "Active" here to retire a
-    signature (e.g. someone leaving) without deleting its history."""
+    signature (e.g. no longer wanted) without deleting its history. Only
+    the signature's own owner (or an admin, e.g. cleaning up after
+    someone's left) can edit it — everyone else's is entirely their own,
+    there's no shared/global one anymore."""
     signature = get_object_or_404(MailSignature, id=signature_id)
+    if signature.user_id != request.user.id and not is_admin(request.user):
+        messages.error(request, "You can only edit your own mail signatures.")
+        return redirect(f"{reverse('core:bank_statement_upload')}?tab=mailsignature")
     form = MailSignatureForm(request.POST, instance=signature)
     if form.is_valid():
         signature = form.save()
         messages.success(request, f"Mail signature '{signature.name or signature.title}' updated.")
+        log_action(request, f"Updated mail signature '{signature.name or signature.title}' (#{signature.id})")
     else:
         for field, errors in form.errors.items():
             label = form.fields[field].label if field in form.fields else field
@@ -540,6 +594,7 @@ def create_user_view(request):
             user = form.save()
             context["create_user_form"] = CreateUserForm()
             context["create_user_result"] = {"success": True, "message": f"User '{user.username}' created."}
+            log_action(request, f"Created user '{user.username}'")
         else:
             error_messages = []
             for field, errors in form.errors.items():
@@ -566,6 +621,7 @@ def delete_user_view(request, user_id):
         username = target.username
         target.delete()
         messages.success(request, f"User '{username}' deleted.")
+        log_action(request, f"Deleted user '{username}'")
     return redirect(f"{reverse('core:bank_statement_upload')}?tab=createuser")
 
 
@@ -587,6 +643,7 @@ def update_user_view(request, user_id):
         else:
             user = form.save()
             messages.success(request, f"User '{user.username}' updated.")
+            log_action(request, f"Updated user '{user.username}'")
     else:
         for field, errors in form.errors.items():
             label = form.fields[field].label if field in form.fields else field
@@ -645,6 +702,10 @@ def verification_format_view(request):
                     "b64": base64.b64encode(buf.getvalue()).decode("ascii"),
                     "banks": banks,
                 }
+                log_action(
+                    request,
+                    f"Converted verification format for '{uploaded.name}' ({row_count} rows, {skipped_count} skipped)",
+                )
         context["verification_form"] = verification_form
 
     return render(request, "core/bank_statement_upload.html", context)
@@ -696,7 +757,7 @@ def verification_send_mail_view(request):
         return JsonResponse({"success": False, "message": f"Could not read the attachment: {exc}"}, status=400)
 
     fallback_sender_name = request.user.get_full_name() or request.user.username
-    subject, html_body, text_body = build_verification_email(bank_name, rows, fallback_sender_name)
+    subject, html_body, text_body = build_verification_email(bank_name, rows, fallback_sender_name, sender=request.user)
 
     email = EmailMultiAlternatives(subject=subject, body=text_body, to=to_list, cc=cc_list or None)
     email.attach_alternative(html_body, "text/html")
@@ -721,6 +782,7 @@ def verification_send_mail_view(request):
         return JsonResponse({"success": False, "message": f"Send failed: {exc}"}, status=502)
 
     recipients = ", ".join(to_list) + (f" (cc: {', '.join(cc_list)})" if cc_list else "")
+    log_action(request, f"Sent verification mail for {bank_name or 'bank'} to {recipients}")
     return JsonResponse({"success": True, "message": f"Sent to {recipients}"})
 
 
@@ -774,6 +836,7 @@ def toggle_passed_view(request, log_id):
         log.passed_by = ""
         log.passed_at = None
     log.save(update_fields=["passed", "passed_by", "passed_at"])
+    log_action(request, f"Marked reversal file #{log.id} as {'passed' if log.passed else 'not passed'}")
 
     next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or reverse("core:upload")
     return redirect(next_url)
@@ -793,6 +856,8 @@ def download_file_view(request, log_id, kind):
     if not field:
         raise Http404("File not available")
 
+    log_action(request, f"Downloaded {kind} file for reversal log #{log.id}: {filename or field.name}")
+
     # Serve with the clean, standardized filename regardless of whatever
     # suffix Django's storage may have appended to the file on disk (e.g.
     # need_to_reversal_2026-07-10_5WKRS2i.xlsx when a same-named file
@@ -800,74 +865,34 @@ def download_file_view(request, log_id, kind):
     return FileResponse(field.open("rb"), as_attachment=True, filename=filename or field.name)
 
 
-def _reclassify_log(log):
-    """Same red-flag reclassification used on the dashboard, applied per
-    row: failed-but-credited rows move out of "failed" and into manual
-    reversal (money moved, still needs reversing); already-reversed rows
-    move out of manual reversal and into system reversal (support/system
-    already moved the money back)."""
-    log.failed_excl_credited = max(0, log.failed_total - log.failed_credited_count)
-    log.manual_reversal_clean = (
-        max(0, log.reversal_manual_kept - log.already_reversed_count) + log.failed_credited_count
-    )
-    log.system_reversal_clean = log.reversal_system_count + log.already_reversed_count
-    return log
+AUDIT_LOG_PAGE_SIZE = 15
 
 
 @login_required
 @user_passes_test(is_admin, login_url="core:upload")
 def audit_log_view(request):
-    logs = ProcessingLog.objects.all()
-    paginator = Paginator(logs, PAGE_SIZE)
+    rows = []
+    for line in read_events():
+        when, _, rest = line.partition(" | ")
+        username, _, rest = rest.partition(" | ")
+        ip, _, action = rest.partition(" | ")
+        rows.append({"when": when, "username": username, "ip": ip, "action": action})
+    paginator = Paginator(rows, AUDIT_LOG_PAGE_SIZE)
     page_obj = paginator.get_page(request.GET.get("page"))
-    for log in page_obj:
-        _reclassify_log(log)
-
-    # Reconcile audit log, embedded below the reversal one on this same
-    # page (own "rpage" pagination param so it doesn't collide with the
-    # reversal table's "page" above).
-    from reconcile.models import ReconcileRun
-
-    rc_runs = ReconcileRun.objects.all()
-    rc_paginator = Paginator(rc_runs, PAGE_SIZE)
-    rc_page_obj = rc_paginator.get_page(request.GET.get("rpage"))
-
-    return render(request, "core/audit_log.html", {"page_obj": page_obj, "rc_page_obj": rc_page_obj})
+    return render(request, "core/audit_log.html", {"page_obj": page_obj})
 
 
 @login_required
 @user_passes_test(is_admin, login_url="core:upload")
 def export_audit_log_view(request):
-    logs = ProcessingLog.objects.all().order_by("-created_at")
-    wb, ws = _new_sheet("Audit log")
-    headers = [
-        "#", "When", "Uploaded by", "Source file", "Generated file", "Status", "Passed",
-        "Manual reversal (incl. credited)", "System reversal (incl. already-reversed)",
-        "Failed (excl. credited)", "Timeout", "Prabhu rerouted", "Unrecognized bank rows",
-        "Duplicates skipped",
-    ]
-    row = _write_table_header(ws, 1, headers)
-    for log in logs:
-        _reclassify_log(log)
-        ws.append([
-            log.id,
-            timezone.localtime(log.created_at).strftime("%Y-%m-%d %H:%M") if log.created_at else "",
-            log.uploaded_by or "—",
-            log.uploaded_filename or "—",
-            log.generated_filename or "—",
-            log.status,
-            "Passed" if log.passed else ("Pending review" if log.status == ProcessingLog.STATUS_SUCCESS else "—"),
-            log.manual_reversal_clean,
-            log.system_reversal_clean,
-            log.failed_excl_credited,
-            log.timeout_count,
-            log.prabhu_rerouted,
-            log.unrecognized_debtor_bank_rows,
-            log.duplicate_skipped,
-        ])
-    _style_data_rows(ws, row, len(headers))
-    _autosize(ws)
-    return _finalize_xlsx(wb, "audit_log.xlsx")
+    """Serves the actual audit_log.txt file on disk (see core/audit.py) —
+    not a copy rebuilt from some other source, the real file every action
+    across the system has been appended to."""
+    AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not AUDIT_LOG_PATH.exists():
+        AUDIT_LOG_PATH.write_text("", encoding="utf-8")
+    log_action(request, "Downloaded audit_log.txt")
+    return FileResponse(open(AUDIT_LOG_PATH, "rb"), as_attachment=True, filename="audit_log.txt")
 
 
 def _parse_date_range(request, prefix: str):
@@ -1290,106 +1315,17 @@ def dashboard_view(request):
     daily_paginator = Paginator(daily_stats, PAGE_SIZE)
     daily_page = daily_paginator.get_page(request.GET.get("page"))
 
-    # --- Member-wise report ----------------------------------------------
-    # Success / failed / manual-reversal count + amount, rolled up per
-    # Member Name (across every aggregator) over every passed file matching
-    # the selected year/month filter, further narrowed by its own optional
-    # From/To date range. Optional free-text filter on member name. Kept as
-    # its own table (not mixed with the aggregator-wise report below) since
-    # the two answer different questions.
-    member_query = (request.GET.get("member_q") or "").strip()
-    member_from, member_to = _parse_date_range(request, "member")
-    member_qs = MemberAggregatorStat.objects.filter(log__in=successful_logs)
-    if member_from:
-        member_qs = member_qs.filter(log__created_at__date__gte=member_from)
-    if member_to:
-        member_qs = member_qs.filter(log__created_at__date__lte=member_to)
-    member_qs = (
-        member_qs.values("member_name")
-        .annotate(
-            success_count=Sum("success_count"),
-            success_amount=Sum("success_amount"),
-            failed_count=Sum("failed_count"),
-            failed_amount=Sum("failed_amount"),
-            reversal_count=Sum("reversal_count"),
-            reversal_amount=Sum("reversal_amount"),
-        )
-        .order_by("member_name")
-    )
-    if member_query:
-        member_qs = member_qs.filter(member_name__icontains=member_query)
-
-    member_stats = [
-        {
-            "member_name": row["member_name"] or "\u2014",
-            "success_count": row["success_count"] or 0,
-            "success_amount": round(row["success_amount"] or 0, 2),
-            "failed_count": row["failed_count"] or 0,
-            "failed_amount": round(row["failed_amount"] or 0, 2),
-            "reversal_count": row["reversal_count"] or 0,
-            "reversal_amount": round(row["reversal_amount"] or 0, 2),
-        }
-        for row in member_qs
-    ]
-    member_paginator = Paginator(member_stats, PAGE_SIZE)
-    member_page = member_paginator.get_page(request.GET.get("member_page"))
-
-    # --- Aggregator-wise report -------------------------------------------
-    # Same breakdown, rolled up per Aggregator (across every member)
-    # instead, with its own independent From/To date range. Optional
-    # free-text filter on aggregator name.
-    aggregator_query = (request.GET.get("aggregator_q") or "").strip()
-    aggregator_from, aggregator_to = _parse_date_range(request, "aggregator")
-    aggregator_qs = MemberAggregatorStat.objects.filter(log__in=successful_logs)
-    if aggregator_from:
-        aggregator_qs = aggregator_qs.filter(log__created_at__date__gte=aggregator_from)
-    if aggregator_to:
-        aggregator_qs = aggregator_qs.filter(log__created_at__date__lte=aggregator_to)
-    aggregator_qs = (
-        aggregator_qs.values("aggregator")
-        .annotate(
-            success_count=Sum("success_count"),
-            success_amount=Sum("success_amount"),
-            failed_count=Sum("failed_count"),
-            failed_amount=Sum("failed_amount"),
-            reversal_count=Sum("reversal_count"),
-            reversal_amount=Sum("reversal_amount"),
-        )
-        .order_by("aggregator")
-    )
-    if aggregator_query:
-        aggregator_qs = aggregator_qs.filter(aggregator__icontains=aggregator_query)
-
-    aggregator_stats = [
-        {
-            "aggregator": row["aggregator"] or "\u2014",
-            "success_count": row["success_count"] or 0,
-            "success_amount": round(row["success_amount"] or 0, 2),
-            "failed_count": row["failed_count"] or 0,
-            "failed_amount": round(row["failed_amount"] or 0, 2),
-            "reversal_count": row["reversal_count"] or 0,
-            "reversal_amount": round(row["reversal_amount"] or 0, 2),
-        }
-        for row in aggregator_qs
-    ]
-    aggregator_paginator = Paginator(aggregator_stats, PAGE_SIZE)
-    aggregator_page = aggregator_paginator.get_page(request.GET.get("aggregator_page"))
-
     # --- Reconcile summary, embedded below the reversal dashboard --------
     # Same page, same year/month/day filter (shared query params) — the
     # Reconcile app's own dashboard used to be a separate nav item/page;
     # it's folded in here now so there's one Dashboard, not two.
-    from reconcile.dashboard import _aggregate_buckets as _rc_aggregate_buckets
     from reconcile.dashboard import _apply_year_month_filter as _rc_apply_year_month_filter
     from reconcile.dashboard import _build_daily_stats as _rc_build_daily_stats
-    from reconcile.dashboard import _compute_onus_offus as _rc_compute_onus_offus
     from reconcile.dashboard import _compute_totals as _rc_compute_totals
 
     rc_filter = _rc_apply_year_month_filter(request)
     rc_runs = rc_filter["runs"]
     rc_totals = _rc_compute_totals(rc_runs)
-    rc_onus_offus = _rc_compute_onus_offus(rc_runs, rc_totals)
-    rc_buckets = _rc_aggregate_buckets(rc_runs)
     rc_daily_stats, rc_chart_points = _rc_build_daily_stats(rc_runs)
     # Own pagination param ("rpage") so it doesn't collide with the
     # reversal day-breakdown's own "page" param on this same page.
@@ -1414,17 +1350,7 @@ def dashboard_view(request):
             "selected_from": year_month["selected_from"],
             "selected_to": year_month["selected_to"],
             "day_numbers": day_numbers,
-            "member_page": member_page,
-            "member_query": member_query,
-            "member_from": member_from.isoformat() if member_from else "",
-            "member_to": member_to.isoformat() if member_to else "",
-            "aggregator_page": aggregator_page,
-            "aggregator_query": aggregator_query,
-            "aggregator_from": aggregator_from.isoformat() if aggregator_from else "",
-            "aggregator_to": aggregator_to.isoformat() if aggregator_to else "",
             "rc_totals": rc_totals,
-            "rc_onus_offus": rc_onus_offus,
-            "rc_buckets": rc_buckets,
             "rc_daily_page": rc_daily_page,
             "rc_chart_points": rc_chart_points[-30:],
         },
@@ -1486,7 +1412,7 @@ def _write_kv(ws, row: int, label: str, value) -> int:
     return row + 1
 
 
-def _finalize_xlsx(wb, filename: str) -> HttpResponse:
+def _finalize_xlsx(request, wb, filename: str) -> HttpResponse:
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -1495,6 +1421,7 @@ def _finalize_xlsx(wb, filename: str) -> HttpResponse:
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    log_action(request, f"Downloaded dashboard report: {filename}")
     return response
 
 
@@ -1567,7 +1494,7 @@ def export_failed_onoffus_view(request):
         _style_data_rows(ws, header_row, 3)
         _autosize(ws)
 
-    return _finalize_xlsx(wb, f"failed_onus_offus_{suffix}.xlsx")
+    return _finalize_xlsx(request, wb, f"failed_onus_offus_{suffix}.xlsx")
 
 
 @login_required
@@ -1673,7 +1600,7 @@ def export_dashboard_summary_view(request):
     _style_data_rows(ws2, header_row, len(headers))
     _autosize(ws2)
 
-    return _finalize_xlsx(wb, f"dashboard_summary_{suffix}.xlsx")
+    return _finalize_xlsx(request, wb, f"dashboard_summary_{suffix}.xlsx")
 
 
 @login_required
@@ -1739,7 +1666,7 @@ def export_member_report_view(request):
     _style_data_rows(ws, header_row, len(headers))
     _autosize(ws)
 
-    return _finalize_xlsx(wb, f"member_report_{suffix}.xlsx")
+    return _finalize_xlsx(request, wb, f"member_report_{suffix}.xlsx")
 
 
 @login_required
@@ -1808,7 +1735,7 @@ def export_aggregator_report_view(request):
     _style_data_rows(ws, header_row, len(headers))
     _autosize(ws)
 
-    return _finalize_xlsx(wb, f"aggregator_report_{suffix}.xlsx")
+    return _finalize_xlsx(request, wb, f"aggregator_report_{suffix}.xlsx")
 
 
 _DAY_FILL = PatternFill(start_color="1D4ED8", end_color="1D4ED8", fill_type="solid")
@@ -1963,4 +1890,275 @@ def export_day_breakdown_view(request):
     ws.column_dimensions["D"].width = 18
     ws.freeze_panes = "A4"
 
-    return _finalize_xlsx(wb, f"day_by_day_breakdown_{suffix}.xlsx")
+    return _finalize_xlsx(request, wb, f"day_by_day_breakdown_{suffix}.xlsx")
+
+
+def _parse_general_date(raw, default):
+    raw = (raw or "").strip()
+    if not raw:
+        return default
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return default
+
+
+def _general_report_window(request):
+    """From/To for the General tab — a live switch-DB query, so (per the
+    switch_db module's own performance notes) it must never run
+    unbounded: with no ?from/?to given it defaults to today only, rather
+    than falling back to "all time" the way the file-based dashboards
+    do."""
+    today = timezone.localdate()
+    from_date = _parse_general_date(request.GET.get("from"), today)
+    to_date = _parse_general_date(request.GET.get("to"), today)
+    if from_date > to_date:
+        from_date, to_date = to_date, from_date
+    return from_date, to_date
+
+
+def _general_report_rows(request):
+    """Fetches switch-DB rows for the General tab's current From/To and
+    runs them through compute_general_report(). Returns
+    (from_date, to_date, report, error) — error is a message string
+    (switch DB unreachable / not configured) with report=None, so the
+    view can render an empty state instead of a 500."""
+    from .general_report import compute_general_report
+
+    from_date, to_date = _general_report_window(request)
+    start, end = switch_db.date_window(from_date, to_date)
+    try:
+        rows = switch_db.fetch_transactions(start, end)
+    except switch_db.SwitchDBError as exc:
+        return from_date, to_date, None, str(exc)
+    return from_date, to_date, compute_general_report(rows), None
+
+
+def _paginate_named_rows(rows, query, request, get_param):
+    if query:
+        rows = [r for r in rows if query.lower() in str(r["name"]).lower()]
+    return Paginator(rows, PAGE_SIZE).get_page(request.GET.get(get_param))
+
+
+@login_required
+def general_report_view(request):
+    """"General" dashboard tab: member/aggregator/On-Us-Off-Us/amount-range/
+    issuer(debtor bank)/acquirer(creditor bank) analytics computed live
+    from the switch DB for a From/To window — see core/general_report.py.
+    Unlike every other dashboard tab this never reads a processed file or
+    ReconcileRun; it queries transaction_entry directly."""
+    from_date, to_date, report, error = _general_report_rows(request)
+
+    member_query = (request.GET.get("member_q") or "").strip()
+    aggregator_query = (request.GET.get("aggregator_q") or "").strip()
+
+    if report is None:
+        member_page = aggregator_page = issuer_page = acquirer_page = Paginator([], PAGE_SIZE).get_page(1)
+        onus_offus = {"onus": {"count": 0, "amount": 0, "reasons": []}, "offus": {"count": 0, "amount": 0, "reasons": []}}
+        buckets = []
+        totals = {
+            "total_count": 0, "success_count": 0, "success_amount": 0,
+            "failed_count": 0, "failed_amount": 0, "other_count": 0, "other_amount": 0,
+            "other_status_breakdown": [],
+        }
+    else:
+        member_page = _paginate_named_rows(report["member_rows"], member_query, request, "member_page")
+        aggregator_page = _paginate_named_rows(report["aggregator_rows"], aggregator_query, request, "aggregator_page")
+        issuer_page = _paginate_named_rows(report["issuer_rows"], "", request, "issuer_page")
+        acquirer_page = _paginate_named_rows(report["acquirer_rows"], "", request, "acquirer_page")
+        onus_offus = report["onus_offus"]
+        buckets = report["buckets"]
+        totals = report["totals"]
+
+    return render(
+        request,
+        "core/general_report.html",
+        {
+            "selected_from": from_date,
+            "selected_to": to_date,
+            "error": error,
+            "totals": totals,
+            "member_page": member_page,
+            "member_query": member_query,
+            "aggregator_page": aggregator_page,
+            "aggregator_query": aggregator_query,
+            "issuer_page": issuer_page,
+            "acquirer_page": acquirer_page,
+            "onus_offus": onus_offus,
+            "buckets": buckets,
+        },
+    )
+
+
+@login_required
+def _general_period_bits(request):
+    from_date, to_date, report, error = _general_report_rows(request)
+    period = f"{from_date:%d %b %Y} to {to_date:%d %b %Y}" if from_date != to_date else f"{from_date:%d %b %Y}"
+    suffix = f"{from_date.isoformat()}_to_{to_date.isoformat()}" if from_date != to_date else from_date.isoformat()
+    return from_date, to_date, report, error, period, suffix
+
+
+def _general_error_workbook(error, period):
+    """A one-cell workbook explaining the switch DB couldn't be reached —
+    every General-tab export (combined or per-section) returns this
+    instead of an empty/broken file when _general_report_rows() failed."""
+    wb, ws = _new_sheet("Error")
+    row = _write_title(ws, "General report (live switch DB)", period)
+    ws.cell(row=row, column=1, value=f"Error: {error}").font = _LABEL_FONT
+    return wb
+
+
+def _populate_named_split_sheet(ws, name_header, rows):
+    """Fills an (already created + titled) sheet with: Name | Success |
+    Success amount | Failed | Failed amount | Total | Total amount — used
+    for the Member-wise / Aggregator-wise / Issuer / Acquirer sections,
+    each of which is exactly this shape."""
+    headers = [name_header, "Success", "Success amount (Rs.)", "Failed", "Failed amount (Rs.)", "Total", "Total amount (Rs.)"]
+    header_row = _write_table_header(ws, 1, headers)
+    r = header_row - 1
+    for item in rows:
+        r += 1
+        values = [
+            item["name"], item["success_count"], item["success_amount"],
+            item["failed_count"], item["failed_amount"], item["total_count"], item["total_amount"],
+        ]
+        for i, v in enumerate(values, start=1):
+            ws.cell(row=r, column=i, value=v)
+    _style_data_rows(ws, header_row, len(headers))
+    _autosize(ws)
+
+
+def _populate_reasons_sheet(ws, reasons, pct_header):
+    header_row = _write_table_header(ws, 1, ["Reason", "Count", pct_header])
+    r = header_row - 1
+    for rr in reasons:
+        r += 1
+        ws.cell(row=r, column=1, value=rr["reason"])
+        ws.cell(row=r, column=2, value=rr["count"])
+        ws.cell(row=r, column=3, value=f"{rr['pct']}%")
+    _style_data_rows(ws, header_row, 3)
+    _autosize(ws)
+
+
+def _populate_buckets_sheet(ws, buckets):
+    headers = ["Amount range", "On-Us count", "On-Us amount", "Off-Us count", "Off-Us amount", "Total count", "Total amount"]
+    header_row = _write_table_header(ws, 1, headers)
+    r = header_row - 1
+    for b in buckets:
+        r += 1
+        values = [b["label"], b["onus_count"], b["onus_amount"], b["offus_count"], b["offus_amount"], b["total_count"], b["total_amount"]]
+        for i, v in enumerate(values, start=1):
+            ws.cell(row=r, column=i, value=v)
+    _style_data_rows(ws, header_row, len(headers))
+    _autosize(ws)
+
+
+@login_required
+def export_general_report_view(request):
+    """The General tab's full report as one .xlsx with one sheet per
+    section (Summary / Member-wise / Aggregator-wise / Failed On-Us /
+    Failed Off-Us / Success buckets / Issuer / Acquirer) — separate
+    sheets rather than one long stacked sheet, so each table gets its own
+    header/freeze-pane and Excel's normal sheet-tab navigation, instead
+    of one giant sheet where a later section's freeze pane fights with
+    an earlier one and most of the content ends up unreachable by
+    scrolling."""
+    from_date, to_date, report, error, period, suffix = _general_period_bits(request)
+
+    if error:
+        return _finalize_xlsx(request, _general_error_workbook(error, period), f"general_report_{suffix}.xlsx")
+
+    wb, ws = _new_sheet("Summary")
+    row = _write_title(ws, "General report (live switch DB)", period)
+    row = _write_section(ws, row, "Volume")
+    row = _write_kv(ws, row, "Total transactions", report["totals"]["total_count"])
+    row = _write_kv(ws, row, "Success", report["totals"]["success_count"])
+    row = _write_kv(ws, row, "Success amount (Rs.)", report["totals"]["success_amount"])
+    row = _write_kv(ws, row, "Failed", report["totals"]["failed_count"])
+    row = _write_kv(ws, row, "Failed amount (Rs.)", report["totals"]["failed_amount"])
+    row = _write_kv(ws, row, "Other status (e.g. Reversal, in-flight)", report["totals"]["other_count"])
+    row = _write_kv(ws, row, "Other status amount (Rs.)", report["totals"]["other_amount"])
+    for bit in report["totals"]["other_status_breakdown"]:
+        row = _write_kv(ws, row, f"  — {bit['status']}", bit["count"])
+    _autosize(ws)
+
+    _populate_named_split_sheet(wb.create_sheet("Member-wise"), "Member", report["member_rows"])
+    _populate_named_split_sheet(wb.create_sheet("Aggregator-wise"), "Aggregator", report["aggregator_rows"])
+    _populate_reasons_sheet(wb.create_sheet("Failed On-Us"), report["onus_offus"]["onus"]["reasons"], "% of On-Us total")
+    _populate_reasons_sheet(wb.create_sheet("Failed Off-Us"), report["onus_offus"]["offus"]["reasons"], "% of Off-Us total")
+    _populate_buckets_sheet(wb.create_sheet("Success Buckets"), report["buckets"])
+    _populate_named_split_sheet(wb.create_sheet("Issuer (Debtor bank)"), "Bank", report["issuer_rows"])
+    _populate_named_split_sheet(wb.create_sheet("Acquirer (Creditor)"), "Bank", report["acquirer_rows"])
+
+    return _finalize_xlsx(request, wb, f"general_report_{suffix}.xlsx")
+
+
+@login_required
+def export_general_member_view(request):
+    from_date, to_date, report, error, period, suffix = _general_period_bits(request)
+    if error:
+        return _finalize_xlsx(request, _general_error_workbook(error, period), f"general_member_{suffix}.xlsx")
+    query = (request.GET.get("member_q") or "").strip()
+    rows = report["member_rows"]
+    if query:
+        rows = [r for r in rows if query.lower() in str(r["name"]).lower()]
+    wb, ws = _new_sheet("Member-wise")
+    _populate_named_split_sheet(ws, "Member", rows)
+    return _finalize_xlsx(request, wb, f"general_member_report_{suffix}.xlsx")
+
+
+@login_required
+def export_general_aggregator_view(request):
+    from_date, to_date, report, error, period, suffix = _general_period_bits(request)
+    if error:
+        return _finalize_xlsx(request, _general_error_workbook(error, period), f"general_aggregator_{suffix}.xlsx")
+    query = (request.GET.get("aggregator_q") or "").strip()
+    rows = report["aggregator_rows"]
+    if query:
+        rows = [r for r in rows if query.lower() in str(r["name"]).lower()]
+    wb, ws = _new_sheet("Aggregator-wise")
+    _populate_named_split_sheet(ws, "Aggregator", rows)
+    return _finalize_xlsx(request, wb, f"general_aggregator_report_{suffix}.xlsx")
+
+
+@login_required
+def export_general_issuer_view(request):
+    from_date, to_date, report, error, period, suffix = _general_period_bits(request)
+    if error:
+        return _finalize_xlsx(request, _general_error_workbook(error, period), f"general_issuer_{suffix}.xlsx")
+    wb, ws = _new_sheet("Issuer")
+    _populate_named_split_sheet(ws, "Bank", report["issuer_rows"])
+    return _finalize_xlsx(request, wb, f"general_issuer_report_{suffix}.xlsx")
+
+
+@login_required
+def export_general_acquirer_view(request):
+    from_date, to_date, report, error, period, suffix = _general_period_bits(request)
+    if error:
+        return _finalize_xlsx(request, _general_error_workbook(error, period), f"general_acquirer_{suffix}.xlsx")
+    wb, ws = _new_sheet("Acquirer")
+    _populate_named_split_sheet(ws, "Bank", report["acquirer_rows"])
+    return _finalize_xlsx(request, wb, f"general_acquirer_report_{suffix}.xlsx")
+
+
+@login_required
+def export_general_failed_view(request):
+    """Failed On-Us / Off-Us reason breakdown, as two sheets in one
+    workbook (mirrors reconcile.dashboard.export_failed_onoffus_view)."""
+    from_date, to_date, report, error, period, suffix = _general_period_bits(request)
+    if error:
+        return _finalize_xlsx(request, _general_error_workbook(error, period), f"general_failed_{suffix}.xlsx")
+    wb, ws = _new_sheet("Failed On-Us")
+    _populate_reasons_sheet(ws, report["onus_offus"]["onus"]["reasons"], "% of On-Us total")
+    _populate_reasons_sheet(wb.create_sheet("Failed Off-Us"), report["onus_offus"]["offus"]["reasons"], "% of Off-Us total")
+    return _finalize_xlsx(request, wb, f"general_failed_onus_offus_{suffix}.xlsx")
+
+
+@login_required
+def export_general_buckets_view(request):
+    from_date, to_date, report, error, period, suffix = _general_period_bits(request)
+    if error:
+        return _finalize_xlsx(request, _general_error_workbook(error, period), f"general_buckets_{suffix}.xlsx")
+    wb, ws = _new_sheet("Success Buckets")
+    _populate_buckets_sheet(ws, report["buckets"])
+    return _finalize_xlsx(request, wb, f"general_success_buckets_{suffix}.xlsx")

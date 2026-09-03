@@ -11,6 +11,7 @@
 
         <form method="post" enctype="multipart/form-data" id="upload-form">
             {% csrf_token %}
+            <input type="hidden" name="mode" value="upload">
             <div class="field">
                 <label for="id_ibft_file">{{ form.ibft_file.label }}</label>
                 {{ form.ibft_file }}
@@ -20,10 +21,30 @@
             </div>
             <button type="submit" class="btn" id="upload-submit-btn" style="width:100%;">Process file</button>
         </form>
-        <p class="muted" style="font-size:12.5px; margin-top:16px; margin-bottom:0;">
-            Uploaded as <strong>{{ user.username }}</strong> &middot; stored as
-            <code>ibft_txn_data_&lt;date&gt;.xlsx</code> & output as
-            <code>need_to_reversal_&lt;date&gt;.xlsx</code>
+
+        <div class="section-label" style="margin-top:18px;">— or fetch from DB —</div>
+        <form method="post" id="db-fetch-form">
+            {% csrf_token %}
+            <input type="hidden" name="mode" value="db_fetch">
+            <div class="field-inline-row">
+                <label for="{{ db_fetch_form.from_date.id_for_label }}">From</label>
+                {{ db_fetch_form.from_date }}
+            </div>
+            {% if db_fetch_form.from_date.errors %}
+                <div class="error-box">{{ db_fetch_form.from_date.errors }}</div>
+            {% endif %}
+            <div class="field-inline-row">
+                <label for="{{ db_fetch_form.to_date.id_for_label }}">To</label>
+                {{ db_fetch_form.to_date }}
+            </div>
+            {% if db_fetch_form.to_date.errors %}
+                <div class="error-box">{{ db_fetch_form.to_date.errors }}</div>
+            {% endif %}
+            {% if db_fetch_form.non_field_errors %}
+                <div class="error-box">{{ db_fetch_form.non_field_errors }}</div>
+            {% endif %}
+            <button type="submit" class="btn btn-secondary" id="db-fetch-submit-btn" style="width:100%; margin-top:14px;">Fetch &amp; process</button>
+        </form>
     </div>
 
     <div class="card panel-shared">
@@ -92,7 +113,7 @@
                         <span class="badge badge-failed" title="{{ log.error_message }}">Failed</span>
                     {% endif %}
                 </div>
-                <div class="activity-box-grid">
+                <div class="activity-box-grid reversal-activity-grid">
                     <div class="activity-box-item">
                         <div class="k">Uploaded</div>
                         <div class="v">
@@ -132,7 +153,7 @@
                         </div>
                     </div>
                     <div class="activity-box-item">
-                        <div class="k">Bank statement</div>
+                        <div class="k">Bank stmt</div>
                         <div class="v">
                             {% if log.status == "SUCCESS" and log.generated_file %}
                                 {% if log.bank_statement_checked %}
@@ -173,6 +194,12 @@ document.getElementById('upload-form').addEventListener('submit', function () {
     if (btn.disabled) { return false; } // guard against double submit
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Processing…';
+});
+document.getElementById('db-fetch-form').addEventListener('submit', function () {
+    var btn = document.getElementById('db-fetch-submit-btn');
+    if (btn.disabled) { return false; } // guard against double submit
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Fetching…';
 });
 </script>
 {% endblock %}

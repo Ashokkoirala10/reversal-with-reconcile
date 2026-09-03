@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -367,29 +368,44 @@ class VerificationBankContact(models.Model):
 
 
 class MailSignature(models.Model):
-    """Who verification emails (see VerificationBankContact / the
-    "Verification format" tab's "Send mail" button) are signed as — kept
-    in the database instead of hardcoded settings/.env values so it can be
-    changed from the app itself as staff come and go, with no code change
-    or restart: add a new row for a new person, untick "Active" on the one
-    they're replacing.
+    """Who an outgoing email (a verification "Send mail", or a reconcile
+    issue-note "notify others" alert) is signed as — per user, not one
+    shared setting: each user keeps their own list here and picks their
+    own active one, so sending as "Ashok" vs "Priya" no longer means
+    switching a single shared row back and forth. resolve_mail_signature()
+    picks it up by whichever user is actually sending, kept in the
+    database (rather than hardcoded settings/.env values) so anyone can
+    add/edit their own without a code change or restart.
 
-    When more than one row is active, the most recently updated one wins
-    (see core/services.py:build_verification_email) — there's no hard
-    one-row-only constraint, so an outgoing person can stay visible here
-    (unticked) without deleting their history.
+    `user` is nullable to keep pre-existing rows (created back when this
+    was one shared signature for everyone) working as a fallback: if the
+    sending user has no active signature of their own,
+    resolve_mail_signature() falls back to a user=None active row before
+    finally falling back to the MAIL_SIGNATURE_* settings/.env defaults.
+
+    When a user has more than one active row, the most recently updated
+    one wins (see core/services.py:resolve_mail_signature) — there's no
+    hard one-row-only constraint, so an outgoing person can stay visible
+    here (unticked) without deleting their history.
 
     Name is optional on purpose: leave it blank for a shared/generic
     mailbox so the signature reads just "Regards, <Title>" with no named
     sender. Company/address/toll-free/website are also editable here per
     row, but only need filling in if this row should override the
     MAIL_SIGNATURE_COMPANY etc. settings/.env defaults — leave any of them
-    blank to fall back to that default instead (see
-    core/services.py:resolve_mail_signature). The sct-signature banner
+    blank to fall back to that default instead. The sct-signature banner
     image itself is not editable here — it's the static file at
     core/static/core/img/mail-signature.png, replace that file to change
     it for everyone."""
 
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="mail_signatures",
+        null=True,
+        blank=True,
+        help_text="Whose signatures these are — blank only for legacy rows created before per-user signatures.",
+    )
     name = models.CharField(
         max_length=150,
         blank=True,

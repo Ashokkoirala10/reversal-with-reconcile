@@ -54,13 +54,15 @@
                 <button type="button" class="dash-menu-item dash-subitem" data-tab="overview">Overview</button>
                 <button type="button" class="dash-menu-item dash-subitem" data-tab="monthly">Monthly report</button>
                 <button type="button" class="dash-menu-item dash-subitem" data-tab="daily">Day report</button>
-                <button type="button" class="dash-menu-item dash-subitem" data-tab="member">Member report</button>
-                <button type="button" class="dash-menu-item dash-subitem" data-tab="aggregator">Aggregator report</button>
             </div>
             <div class="dash-menu-divider"></div>
             <button type="button" class="dash-menu-item dash-menu-parent" data-tab="reconcile">
                 <span>Reconcile</span>
             </button>
+            <div class="dash-menu-divider"></div>
+            <a href="{% url 'core:general_report' %}" class="dash-menu-item dash-menu-parent">
+                <span>General</span>
+            </a>
         </nav>
 
     </aside>
@@ -270,135 +272,6 @@
             </div>
         </div>
 
-        <!-- ===================== MEMBER-WISE REPORT ===================== -->
-        <div class="dash-panel" id="tab-member" style="display:none;">
-            <div class="card">
-                <h2>Member-wise report</h2>
-
-
-                <form method="get" class="year-filter" style="margin-bottom:14px;">
-                    {% if selected_from %}<input type="hidden" name="from" value="{{ selected_from|date:'Y-m-d' }}">{% endif %}
-                    {% if selected_to %}<input type="hidden" name="to" value="{{ selected_to|date:'Y-m-d' }}">{% endif %}
-                    <label for="member-q">Member</label>
-                    <input type="text" id="member-q" name="member_q" value="{{ member_query }}" placeholder="Search member name…" style="max-width:200px; margin-top:0;">
-                    <label for="member-from">From</label>
-                    <input type="date" id="member-from" name="member_from" value="{{ member_from }}" style="margin-top:0;">
-                    <label for="member-to">To</label>
-                    <input type="date" id="member-to" name="member_to" value="{{ member_to }}" style="margin-top:0;">
-                    <button type="submit" class="btn btn-secondary btn-sm">Search</button>
-                    {% if member_query or member_from or member_to %}<a class="btn btn-secondary btn-sm" href="?{% if selected_from %}from={{ selected_from|date:"Y-m-d" }}&{% endif %}{% if selected_to %}to={{ selected_to|date:"Y-m-d" }}&{% endif %}#member">Clear</a>{% endif %}
-                    <a class="btn btn-secondary btn-sm" href="{% url 'core:export_member_report' %}?{% if selected_from %}from={{ selected_from|date:"Y-m-d" }}&{% endif %}{% if selected_to %}to={{ selected_to|date:"Y-m-d" }}&{% endif %}{% if member_query %}member_q={{ member_query }}&{% endif %}{% if member_from %}member_from={{ member_from }}&{% endif %}{% if member_to %}member_to={{ member_to }}&{% endif %}">&#8595; Download Excel</a>
-                </form>
-
-                <div class="table-scroll">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Member</th>
-                                <th>Success</th>
-                                <th>Success amount</th>
-                                <th>Failed</th>
-                                <th>Failed amount</th>
-                                <th>Reversal</th>
-                                <th>Reversal amount</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                        {% for r in member_page %}
-                            <tr>
-                                <td><strong>{{ r.member_name }}</strong></td>
-                                <td>{{ r.success_count }}</td>
-                                <td title="Rs. {{ r.success_amount|floatformat:2 }}">Rs. {{ r.success_amount|npr }}</td>
-                                <td>{{ r.failed_count }}</td>
-                                <td title="Rs. {{ r.failed_amount|floatformat:2 }}">Rs. {{ r.failed_amount|npr }}</td>
-                                <td>{{ r.reversal_count }}</td>
-                                <td title="Rs. {{ r.reversal_amount|floatformat:2 }}">Rs. {{ r.reversal_amount|npr }}</td>
-                            </tr>
-                        {% empty %}
-                            <tr><td colspan="7" class="muted">No passed reports yet{% if member_query %} matching "{{ member_query }}"{% endif %}.</td></tr>
-                        {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-
-                <div class="pagination">
-                    {% if member_page.has_previous %}
-                        <a href="?member_page={{ member_page.previous_page_number }}{% if selected_from %}&from={{ selected_from|date:"Y-m-d" }}{% endif %}{% if selected_to %}&to={{ selected_to|date:"Y-m-d" }}{% endif %}{% if member_query %}&member_q={{ member_query }}{% endif %}{% if member_from %}&member_from={{ member_from }}{% endif %}{% if member_to %}&member_to={{ member_to }}{% endif %}#member">&larr; Previous</a>
-                    {% endif %}
-                    {% if member_page.paginator.num_pages > 1 %}
-                        <span class="muted">Page {{ member_page.number }} of {{ member_page.paginator.num_pages }}</span>
-                    {% endif %}
-                    {% if member_page.has_next %}
-                        <a href="?member_page={{ member_page.next_page_number }}{% if selected_from %}&from={{ selected_from|date:"Y-m-d" }}{% endif %}{% if selected_to %}&to={{ selected_to|date:"Y-m-d" }}{% endif %}{% if member_query %}&member_q={{ member_query }}{% endif %}{% if member_from %}&member_from={{ member_from }}{% endif %}{% if member_to %}&member_to={{ member_to }}{% endif %}#member">Next &rarr;</a>
-                    {% endif %}
-                </div>
-            </div>
-        </div>
-
-        <!-- ===================== AGGREGATOR-WISE REPORT ===================== -->
-        <div class="dash-panel" id="tab-aggregator" style="display:none;">
-            <div class="card">
-                <h2>Aggregator-wise report</h2>
-                
-
-                <form method="get" class="year-filter" style="margin-bottom:14px;">
-                    {% if selected_from %}<input type="hidden" name="from" value="{{ selected_from|date:'Y-m-d' }}">{% endif %}
-                    {% if selected_to %}<input type="hidden" name="to" value="{{ selected_to|date:'Y-m-d' }}">{% endif %}
-                    <label for="aggregator-q">Aggregator</label>
-                    <input type="text" id="aggregator-q" name="aggregator_q" value="{{ aggregator_query }}" placeholder="Search aggregator name…" style="max-width:200px; margin-top:0;">
-                    <label for="aggregator-from">From</label>
-                    <input type="date" id="aggregator-from" name="aggregator_from" value="{{ aggregator_from }}" style="margin-top:0;">
-                    <label for="aggregator-to">To</label>
-                    <input type="date" id="aggregator-to" name="aggregator_to" value="{{ aggregator_to }}" style="margin-top:0;">
-                    <button type="submit" class="btn btn-secondary btn-sm">Search</button>
-                    {% if aggregator_query or aggregator_from or aggregator_to %}<a class="btn btn-secondary btn-sm" href="?{% if selected_from %}from={{ selected_from|date:"Y-m-d" }}&{% endif %}{% if selected_to %}to={{ selected_to|date:"Y-m-d" }}&{% endif %}#aggregator">Clear</a>{% endif %}
-                    <a class="btn btn-secondary btn-sm" href="{% url 'core:export_aggregator_report' %}?{% if selected_from %}from={{ selected_from|date:"Y-m-d" }}&{% endif %}{% if selected_to %}to={{ selected_to|date:"Y-m-d" }}&{% endif %}{% if aggregator_query %}aggregator_q={{ aggregator_query }}&{% endif %}{% if aggregator_from %}aggregator_from={{ aggregator_from }}&{% endif %}{% if aggregator_to %}aggregator_to={{ aggregator_to }}&{% endif %}">&#8595; Download Excel</a>
-                </form>
-
-                <div class="table-scroll">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Aggregator</th>
-                                <th>Success</th>
-                                <th>Success amount</th>
-                                <th>Failed</th>
-                                <th>Failed amount</th>
-                                <th>Reversal</th>
-                                <th>Reversal amount</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                        {% for r in aggregator_page %}
-                            <tr>
-                                <td><strong>{{ r.aggregator }}</strong></td>
-                                <td>{{ r.success_count }}</td>
-                                <td title="Rs. {{ r.success_amount|floatformat:2 }}">Rs. {{ r.success_amount|npr }}</td>
-                                <td>{{ r.failed_count }}</td>
-                                <td title="Rs. {{ r.failed_amount|floatformat:2 }}">Rs. {{ r.failed_amount|npr }}</td>
-                                <td>{{ r.reversal_count }}</td>
-                                <td title="Rs. {{ r.reversal_amount|floatformat:2 }}">Rs. {{ r.reversal_amount|npr }}</td>
-                            </tr>
-                        {% empty %}
-                            <tr><td colspan="7" class="muted">No passed reports yet{% if aggregator_query %} matching "{{ aggregator_query }}"{% endif %}.</td></tr>
-                        {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-
-                <div class="pagination">
-                    {% if aggregator_page.has_previous %}
-                        <a href="?aggregator_page={{ aggregator_page.previous_page_number }}{% if selected_from %}&from={{ selected_from|date:"Y-m-d" }}{% endif %}{% if selected_to %}&to={{ selected_to|date:"Y-m-d" }}{% endif %}{% if aggregator_query %}&aggregator_q={{ aggregator_query }}{% endif %}{% if aggregator_from %}&aggregator_from={{ aggregator_from }}{% endif %}{% if aggregator_to %}&aggregator_to={{ aggregator_to }}{% endif %}#aggregator">&larr; Previous</a>
-                    {% endif %}
-                    {% if aggregator_page.paginator.num_pages > 1 %}
-                        <span class="muted">Page {{ aggregator_page.number }} of {{ aggregator_page.paginator.num_pages }}</span>
-                    {% endif %}
-                    {% if aggregator_page.has_next %}
-                        <a href="?aggregator_page={{ aggregator_page.next_page_number }}{% if selected_from %}&from={{ selected_from|date:"Y-m-d" }}{% endif %}{% if selected_to %}&to={{ selected_to|date:"Y-m-d" }}{% endif %}{% if aggregator_query %}&aggregator_q={{ aggregator_query }}{% endif %}{% if aggregator_from %}&aggregator_from={{ aggregator_from }}{% endif %}{% if aggregator_to %}&aggregator_to={{ aggregator_to }}{% endif %}#aggregator">Next &rarr;</a>
-                    {% endif %}
-                </div>
-            </div>
-        </div>
 
         <!-- ===================== RECONCILE ===================== -->
         <div class="dash-panel" id="tab-reconcile" style="display:none;">
@@ -426,76 +299,6 @@
                     <div class="stat"><div class="num">{{ rc_totals.khalti_total }}</div><div class="label">Khalti total</div></div>
                     <div class="stat"><div class="num">{{ rc_totals.khalti_reconciled }}</div><div class="label">Khalti reconciled</div></div>
                     <div class="stat stat-red"><div class="num">{{ rc_totals.khalti_flagged }}</div><div class="label">Khalti flagged</div></div>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="card-header-row">
-                    <h2>Reconcile — Failed On-Us vs Off-Us</h2>
-                    <a class="btn btn-secondary btn-sm" href="{% url 'reconcile:export_failed_onoffus' %}?from={{ selected_from|date:'Y-m-d' }}&to={{ selected_to|date:'Y-m-d' }}">&#8595; Download Excel</a>
-                </div>
-                <div class="split" style="grid-template-columns: 1fr 1fr;">
-                    <div class="onus-block">
-                        <div class="onus-head">
-                            <span>On-Us</span>
-                            <span>{{ rc_onus_offus.onus.count }} rows &middot; Rs. {{ rc_onus_offus.onus.amount|npr }}</span>
-                        </div>
-                        <table>
-                            <thead><tr><th>Reason</th><th>Count</th><th>%</th></tr></thead>
-                            <tbody>
-                            {% for r in rc_onus_offus.onus.reasons %}
-                                <tr><td>{{ r.reason }}</td><td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
-                            {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                    <div class="onus-block">
-                        <div class="onus-head offus">
-                            <span>Off-Us</span>
-                            <span>{{ rc_onus_offus.offus.count }} rows &middot; Rs. {{ rc_onus_offus.offus.amount|npr }}</span>
-                        </div>
-                        <table>
-                            <thead><tr><th>Reason</th><th>Count</th><th>%</th></tr></thead>
-                            <tbody>
-                            {% for r in rc_onus_offus.offus.reasons %}
-                                <tr><td>{{ r.reason }}</td><td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
-                            {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="card-header-row">
-                    <h2>Reconcile — success amount buckets</h2>
-                    <a class="btn btn-secondary btn-sm" href="{% url 'reconcile:export_buckets' %}?from={{ selected_from|date:'Y-m-d' }}&to={{ selected_to|date:'Y-m-d' }}">&#8595; Download Excel</a>
-                </div>
-                <p class="muted">Successful transactions grouped by amount range, split On-Us / Off-Us. Uses the same Day / Month / Year filter above — pull a specific period, then download for monthly submission.</p>
-                <div class="table-scroll">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Amount range</th><th>On-Us count</th><th>On-Us amount</th>
-                                <th>Off-Us count</th><th>Off-Us amount</th><th>Total count</th><th>Total amount</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                        {% for b in rc_buckets %}
-                            <tr>
-                                <td><strong>{{ b.label }}</strong></td>
-                                <td>{{ b.onus_count }}</td>
-                                <td title="Rs. {{ b.onus_amount|floatformat:2 }}">Rs. {{ b.onus_amount|npr }}</td>
-                                <td>{{ b.offus_count }}</td>
-                                <td title="Rs. {{ b.offus_amount|floatformat:2 }}">Rs. {{ b.offus_amount|npr }}</td>
-                                <td>{{ b.total_count }}</td>
-                                <td title="Rs. {{ b.total_amount|floatformat:2 }}">Rs. {{ b.total_amount|npr }}</td>
-                            </tr>
-                        {% empty %}
-                            <tr><td colspan="7" class="muted">No passed reconcile runs yet.</td></tr>
-                        {% endfor %}
-                        </tbody>
-                    </table>
                 </div>
             </div>
 
@@ -603,7 +406,7 @@
         });
 
         // Reversal reports stay hidden until the Reversal menu is opened.
-        var reversalTab = ['overview', 'monthly', 'daily', 'member', 'aggregator'].indexOf(tab) !== -1;
+        var reversalTab = ['overview', 'monthly', 'daily'].indexOf(tab) !== -1;
         if (reversalSubmenu && reversalTab) {
             reversalSubmenu.hidden = false;
             reversalBtn.setAttribute('aria-expanded', 'true');
@@ -642,7 +445,7 @@
     var initial = (window.location.hash || '').replace('#', '');
     if (initial === 'reconcile') {
         activate('reconcile', false);
-    } else if (['monthly', 'daily', 'member', 'aggregator', 'overview'].indexOf(initial) !== -1) {
+    } else if (['monthly', 'daily', 'overview'].indexOf(initial) !== -1) {
         activate(initial, false);
     } else {
         // Initial dashboard state: only the two main menu entries are visible.

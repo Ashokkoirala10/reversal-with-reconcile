@@ -136,3 +136,14 @@ MAIL_SIGNATURE_PHONE = os.environ.get("MAIL_SIGNATURE_PHONE", "")
 MAIL_SIGNATURE_ADDRESS = os.environ.get("MAIL_SIGNATURE_ADDRESS", "")
 MAIL_SIGNATURE_TOLL_FREE = os.environ.get("MAIL_SIGNATURE_TOLL_FREE", "")
 MAIL_SIGNATURE_WEBSITE = os.environ.get("MAIL_SIGNATURE_WEBSITE", "")
+
+# --- Switch DB (read-only source for "Fetch from DB", see core/switch_db.py)
+# Not a Django DATABASES alias on purpose — see switch_db.py's module
+# docstring for why.
+SWITCH_DB = {
+    "HOST": os.environ.get("SWITCH_DB_HOST", ""),
+    "PORT": os.environ.get("SWITCH_DB_PORT", "5432"),
+    "NAME": os.environ.get("SWITCH_DB_NAME", ""),
+    "USER": os.environ.get("SWITCH_DB_USER", ""),
+    "PASSWORD": os.environ.get("SWITCH_DB_PASSWORD", ""),
+}

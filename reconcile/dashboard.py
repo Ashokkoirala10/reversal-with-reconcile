@@ -26,6 +26,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from core.audit import log_action
 from core.report_constants import MONTH_NAMES as _MONTH_NAMES
 from core.report_constants import REASON_ORDER as _REASON_ORDER
 
@@ -278,10 +279,19 @@ def _build_daily_stats(runs):
             )
 
         day_id = f"rc-day-{day.isoformat()}"
+        # Percent of (reconciled + outstanding) specifically, not of
+        # total_transactions scanned — those two are the bar's only two
+        # segments, so this is what makes the bar fill edge-to-edge
+        # instead of leaving a large uncolored remainder for every scanned
+        # row that isn't part of either bucket (e.g. rows outside the
+        # SCT/NCHL/Khalti networks this reconciliation covers).
+        accounted_for = totals["grand_total_reconciled"] + totals["grand_total_outstanding"]
         row = dict(totals)
         row["day"] = day
         row["day_id"] = day_id
         row["day_iso"] = day.isoformat()
+        row["reconciled_pct"] = round(100 * totals["grand_total_reconciled"] / accounted_for) if accounted_for else 0
+        row["outstanding_pct"] = round(100 * totals["grand_total_outstanding"] / accounted_for) if accounted_for else 0
         row["detail"] = {
             "day": day.strftime("%A, %d %B %Y"),
             "day_iso": day.isoformat(),
@@ -353,7 +363,7 @@ def _autosize(ws, max_width=50):
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
 
-def _finalize_xlsx(wb, filename):
+def _finalize_xlsx(request, wb, filename):
     from io import BytesIO
 
     buf = BytesIO()
@@ -363,6 +373,7 @@ def _finalize_xlsx(wb, filename):
         buf.read(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    log_action(request, f"Downloaded reconcile dashboard report: {filename}")
     return response
 
 
@@ -419,7 +430,7 @@ def export_bucket_report_view(request):
     for c in range(1, 8):
         ws.cell(row=ws.max_row, column=c).font = Font(bold=True)
     _autosize(ws)
-    return _finalize_xlsx(wb, f"success_amount_buckets_{period_label.replace(' ', '_')}.xlsx")
+    return _finalize_xlsx(request, wb, f"success_amount_buckets_{period_label.replace(' ', '_')}.xlsx")
 
 
 @login_required
@@ -441,7 +452,7 @@ def export_failed_onoffus_view(request):
         ws2.append([r["reason"], r["count"], f"{r['pct']}%"])
     _autosize(ws2)
 
-    return _finalize_xlsx(wb, "reconcile_failed_onus_offus.xlsx")
+    return _finalize_xlsx(request, wb, "reconcile_failed_onus_offus.xlsx")
 
 
 @login_required
@@ -471,7 +482,7 @@ def export_day_breakdown_view(request):
             ]
         )
     _autosize(ws)
-    return _finalize_xlsx(wb, "reconcile_day_breakdown.xlsx")
+    return _finalize_xlsx(request, wb, "reconcile_day_breakdown.xlsx")
 
 
 _SUMMARY_TITLE_FONT = Font(bold=True, size=14)
@@ -540,4 +551,4 @@ def export_summary_view(request):
 
     _autosize(ws)
     filename = f"reconcile_summary_{period.replace(' ', '_').replace('/', '-')}.xlsx"
-    return _finalize_xlsx(wb, filename)
+    return _finalize_xlsx(request, wb, filename)

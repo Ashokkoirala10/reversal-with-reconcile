@@ -212,6 +212,10 @@
     .btn-xs { padding: 4px 9px; font-size: 11px; border-radius: 6px; gap: 4px; }
     .btn-toggle-on { background: var(--green); }
     .btn-toggle-on:hover { background: #15803d; }
+    .btn-issue-open { background: var(--red); color: white; border-color: var(--red); }
+    .btn-issue-open:hover { background: #b91c1c; }
+    .btn-issue-resolved { background: var(--green); color: white; border-color: var(--green); }
+    .btn-issue-resolved:hover { background: #15803d; }
     .spinner {
         width: 14px; height: 14px;
         border: 2px solid rgba(255,255,255,0.5);
@@ -221,7 +225,7 @@
         display: inline-block;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    input[type=file], input[type=text], input[type=password], input[type=email] {
+    input[type=file], input[type=text], input[type=password], input[type=email], input[type=date], textarea {
         width: 100%;
         padding: 10px 12px;
         border: 1.5px solid var(--border);
@@ -230,6 +234,7 @@
         margin-top: 6px;
         background: #fbfcfe;
     }
+    textarea { font-family: inherit; resize: vertical; }
     .field select {
         width: 100%;
         max-width: 100%;
@@ -245,7 +250,7 @@
         border-color: var(--primary-light);
         box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
     }
-    input[type=file]:focus, input[type=text]:focus, input[type=password]:focus, input[type=email]:focus {
+    input[type=file]:focus, input[type=text]:focus, input[type=password]:focus, input[type=email]:focus, input[type=date]:focus, textarea:focus {
         outline: none;
         border-color: var(--primary-light);
         box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
@@ -339,14 +344,28 @@
     .pagination { margin-top: 20px; }
     .pagination a, .pagination span { margin-right: 12px; font-size: 13.5px; color: var(--primary); text-decoration: none; }
     .pagination a:hover { text-decoration: underline; }
-    .messages { list-style: none; padding: 0; margin: 0 0 20px; }
+    .messages {
+        list-style: none; padding: 0; margin: 0;
+        position: fixed; top: 16px; right: 16px; z-index: 1000;
+        width: min(380px, calc(100vw - 32px));
+        display: flex; flex-direction: column; gap: 8px;
+    }
     .messages li {
         background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b;
-        padding: 10px 14px; border-radius: 8px; margin-bottom: 8px; font-size: 13.5px;
+        padding: 12px 16px; border-radius: 10px; font-size: 13.5px;
+        box-shadow: 0 6px 20px rgba(16, 24, 40, 0.12);
+        cursor: pointer;
+        animation: toast-in 0.2s ease;
+        transition: opacity 0.3s ease, transform 0.3s ease;
     }
+    .messages li.fade-out { opacity: 0; transform: translateX(12px); }
     .messages li.success { background: #f0fdf4; border-color: #86efac; color: #15803d; }
     .messages li.info { background: #eff6ff; border-color: #93c5fd; color: #1d4ed8; }
     .messages li.warning { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+    @keyframes toast-in {
+        from { opacity: 0; transform: translateX(12px); }
+        to { opacity: 1; transform: translateX(0); }
+    }
 
     /* dashboard bar */
     .day-row {
@@ -748,6 +767,20 @@
         grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
         gap: 12px 16px;
     }
+    /* Reversal's "My activity" card (core/upload.html): Uploaded+Generated
+       and Passed+Bank statement always paired side by side. Fixed 2-column
+       grid (not .activity-box-grid's auto-fit above, which falls back to
+       stacking in a narrow card) — the 4 items are already in that pairing
+       order in the markup, so a plain 2-column grid pairs them for free. */
+    .reversal-activity-grid {
+        grid-template-columns: 1fr 1fr !important;
+        gap: 10px 14px;
+    }
+    .reversal-activity-grid .activity-box-item .v { min-height: 0; }
+    /* The Bank stmt badge's "(N+N flagged)" suffix can be longer than the
+       narrow 2-column cell; let it wrap instead of getting clipped by
+       .scroll-body's overflow-x: hidden. */
+    .activity-box-item .v .badge { white-space: normal; text-align: center; }
     @media (max-width: 420px) {
         .activity-box-grid { grid-template-columns: repeat(2, 1fr); }
     }
@@ -865,6 +898,7 @@
         background: linear-gradient(120deg, var(--teal-dark), var(--teal));
         box-shadow: 0 3px 10px rgba(13, 148, 136, 0.25);
     }
+    a.dash-menu-item { text-decoration: none; }
     .dash-sidebar-hint {
         font-size: 12px;
         line-height: 1.5;
@@ -899,6 +933,7 @@
 
 /* Dashboard: compact From/To date range filter */
 .date-range-filter input[type="date"] {
+    width: auto;
     padding: 8px 10px;
     border: 1.5px solid var(--border);
     border-radius: 8px;
@@ -906,6 +941,7 @@
     font-weight: 600;
     color: var(--primary-dark);
     background: #fbfcfe;
+    margin-top: 0;
 }
 .date-range-filter .btn { padding: 8px 12px; }
 
@@ -990,3 +1026,43 @@
 @media (max-width: 1150px) {
     #reconcile-split .activity-collapse-toggle { display:none; }
 }
+
+/* Label + field on one row, labels sharing a fixed-width column so the
+   fields line up (e.g. "Fetch from DB"'s From/To date inputs). */
+.field-inline-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+.field-inline-row label {
+    width: 40px;
+    flex-shrink: 0;
+}
+.field-inline-row input[type="date"] {
+    flex: 1;
+    margin-top: 0;
+}
+
+/* Source-mode toggle (Upload file / Fetch from DB) */
+.source-toggle {
+    display: inline-flex;
+    padding: 3px;
+    border: 1.5px solid var(--border);
+    border-radius: 9px;
+    background: #fbfcfe;
+    gap: 3px;
+}
+.source-toggle-btn {
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+.source-toggle-btn:hover { color: var(--primary-dark); }
+.source-toggle-btn.is-active { background: var(--primary); color: white; }

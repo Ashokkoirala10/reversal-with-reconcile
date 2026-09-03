@@ -2166,55 +2166,122 @@ def build_verification_bank_filename(bank_name: str, source_filename: str) -> st
     return f"verification_{safe}_{_extract_date_str(source_filename)}.xlsx"
 
 
-def resolve_mail_signature(fallback_name: str = "") -> dict[str, str]:
-    """Who/what to sign an outgoing verification email with: every field
-    (name/title/mobile/company/address/toll_free/website) comes from the
-    most recently updated active core.models.MailSignature row, if one
-    exists (see that model's docstring — this is what lets this be changed
-    from the app itself, not a code/deploy change) — any field left blank
-    on that row falls back to the matching MAIL_SIGNATURE_* settings/.env
-    default. With no active row at all, every field falls back to that
-    settings/.env default, with `fallback_name` (typically the logged-in
-    user's own name) used for name only if MAIL_SIGNATURE_NAME is also
-    unset."""
+def resolve_mail_signature(fallback_name: str = "", user: Any = None) -> dict[str, str]:
+    """Who/what to sign an outgoing email with (a verification "Send
+    mail", or a reconcile issue-note "notify others" alert).
+
+    If `user` has their own active core.models.MailSignature row, that
+    row is used *as entered* for the personal fields (name/mobile) — a
+    blank name there means blank in the output (an intentionally
+    anonymous/department-only signature), never silently replaced by a
+    different person's MAIL_SIGNATURE_NAME/_PHONE .env value. Only the
+    org-level fields (title/company/address/toll_free/website), which
+    aren't personal, fall back to the matching settings/.env default when
+    left blank.
+
+    If `user` has no active signature of their own (including if `user`
+    itself is None/anonymous — e.g. a system-triggered email), falls back
+    to a shared user=None active row if one exists (a legacy signature
+    from before this was per-user — there, blank fields *do* fall back to
+    the settings/.env defaults, `fallback_name` included, same as always),
+    then finally to those settings/.env defaults outright."""
     from django.conf import settings  # lazy: services.py stays importable without Django set up
     from .models import MailSignature
 
-    defaults = {
-        "name": getattr(settings, "MAIL_SIGNATURE_NAME", "") or fallback_name or "",
+    org_defaults = {
         "title": getattr(settings, "MAIL_SIGNATURE_TITLE", "") or "",
-        "mobile": getattr(settings, "MAIL_SIGNATURE_PHONE", "") or "",
         "company": getattr(settings, "MAIL_SIGNATURE_COMPANY", "") or "",
         "address": getattr(settings, "MAIL_SIGNATURE_ADDRESS", "") or "",
         "toll_free": getattr(settings, "MAIL_SIGNATURE_TOLL_FREE", "") or "",
         "website": getattr(settings, "MAIL_SIGNATURE_WEBSITE", "") or "",
     }
 
-    active = MailSignature.objects.filter(is_active=True).order_by("-updated_at").first()
-    if not active:
-        return defaults
+    own_active = None
+    if user is not None and getattr(user, "is_authenticated", False):
+        own_active = MailSignature.objects.filter(user=user, is_active=True).order_by("-updated_at").first()
+
+    if own_active is not None:
+        return {
+            "name": own_active.name,
+            "title": own_active.title or org_defaults["title"],
+            "mobile": own_active.mobile,
+            "company": own_active.company or org_defaults["company"],
+            "address": own_active.address or org_defaults["address"],
+            "toll_free": own_active.toll_free or org_defaults["toll_free"],
+            "website": own_active.website or org_defaults["website"],
+        }
+
+    shared_defaults = {
+        "name": getattr(settings, "MAIL_SIGNATURE_NAME", "") or fallback_name or "",
+        "mobile": getattr(settings, "MAIL_SIGNATURE_PHONE", "") or "",
+        **org_defaults,
+    }
+    shared_active = MailSignature.objects.filter(user__isnull=True, is_active=True).order_by("-updated_at").first()
+    if not shared_active:
+        return shared_defaults
 
     return {
-        "name": active.name or (getattr(settings, "MAIL_SIGNATURE_NAME", "") or fallback_name or ""),
-        "title": active.title or defaults["title"],
-        "mobile": active.mobile or defaults["mobile"],
-        "company": active.company or defaults["company"],
-        "address": active.address or defaults["address"],
-        "toll_free": active.toll_free or defaults["toll_free"],
-        "website": active.website or defaults["website"],
+        "name": shared_active.name or shared_defaults["name"],
+        "title": shared_active.title or shared_defaults["title"],
+        "mobile": shared_active.mobile or shared_defaults["mobile"],
+        "company": shared_active.company or shared_defaults["company"],
+        "address": shared_active.address or shared_defaults["address"],
+        "toll_free": shared_active.toll_free or shared_defaults["toll_free"],
+        "website": shared_active.website or shared_defaults["website"],
     }
 
 
+def build_signature_blocks(signature: dict[str, str]) -> tuple[str, str]:
+    """(text_block, html_block) "Regards, ..." sign-off from a
+    resolve_mail_signature() dict — shared by every outgoing email that
+    signs off this way (verification "Send mail", reconcile issue-note
+    "notify others" alert) so they render identically: name/title bolded
+    in the HTML version, the sct-signature banner
+    (cid:MAIL_SIGNATURE_IMAGE_CID, attached inline by the caller)
+    appended below the toll-free line."""
+    name = signature["name"]
+    title = signature["title"]
+    phone = signature["mobile"]
+    company = signature["company"]
+    address = signature["address"]
+    toll_free = signature["toll_free"]
+    website = signature["website"]
+    toll_free_line = " ; ".join(part for part in [f"Toll Free: {toll_free}" if toll_free else "", website] if part)
+
+    text_lines = [line for line in ["Regards,", name, title, f"Mobile: {phone}" if phone else "", company, address, toll_free_line] if line]
+    text_block = "\n".join(text_lines)
+
+    html_lines = [
+        line
+        for line in [
+            "Regards,",
+            f"<strong>{name}</strong>" if name else "",
+            f"<strong>{title}</strong>" if title else "",
+            f"Mobile: {phone}" if phone else "",
+            company,
+            address,
+            toll_free_line,
+        ]
+        if line
+    ]
+    html_block = "<br>".join(html_lines)
+    html_block += f'<br><br><img src="cid:{MAIL_SIGNATURE_IMAGE_CID}" alt="Smart Choice Technologies Ltd." style="max-width:360px;">'
+
+    return text_block, html_block
+
+
 def build_verification_email(
-    bank_name: str, rows_out: list[list[Any]], fallback_sender_name: str = ""
+    bank_name: str, rows_out: list[list[Any]], fallback_sender_name: str = "", sender: Any = None
 ) -> tuple[str, str, str]:
     """Build (subject, html_body, text_body) for one bank's verification
     email — an HTML table mirroring the sheet (same yellow-highlighted
     trailing columns) plus the "please help us verify..." wording this
-    used to be sent with by hand, signed via resolve_mail_signature() (name
-    optional, e.g. for a shared mailbox; company/address/toll-free/website
-    each individually overridable there too). The workbook itself is
-    attached separately by the caller."""
+    used to be sent with by hand, signed via resolve_mail_signature() with
+    `sender` (the logged-in user actually sending this one) so it's
+    signed as *their* own active signature (name optional, e.g. for a
+    shared mailbox; company/address/toll-free/website each individually
+    overridable there too). The workbook itself is attached separately by
+    the caller."""
 
     today = date.today().strftime("%Y-%m-%d")
     subject = f"Transaction Verification Request - {bank_name} - {today}"
@@ -2237,45 +2304,8 @@ def build_verification_email(
         f"<thead><tr>{header_cells}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
     )
 
-    signature = resolve_mail_signature(fallback_sender_name)
-    name = signature["name"]
-    title = signature["title"]
-    phone = signature["mobile"]
-    company = signature["company"]
-    address = signature["address"]
-    toll_free = signature["toll_free"]
-    website = signature["website"]
-    toll_free_line = " ; ".join(part for part in [f"Toll Free: {toll_free}" if toll_free else "", website] if part)
-
-    # Plain-text version — no markup at all.
-    text_signature_lines = [
-        "Regards,",
-        name,
-        title,
-        f"Mobile: {phone}" if phone else "",
-        company,
-        address,
-        toll_free_line,
-    ]
-    text_signature_lines = [line for line in text_signature_lines if line]
-
-    # HTML version — name and title bolded, matching the hand-sent emails
-    # this replaces; the sct-signature banner (MAIL_SIGNATURE_IMAGE_CID,
-    # attached inline by the caller) is appended below the toll-free line.
-    html_signature_lines = [
-        "Regards,",
-        f"<strong>{name}</strong>" if name else "",
-        f"<strong>{title}</strong>" if title else "",
-        f"Mobile: {phone}" if phone else "",
-        company,
-        address,
-        toll_free_line,
-    ]
-    html_signature_lines = [line for line in html_signature_lines if line]
-    signature_html = "<br>".join(html_signature_lines)
-    signature_html += (
-        f'<br><br><img src="cid:{MAIL_SIGNATURE_IMAGE_CID}" alt="Smart Choice Technologies Ltd." style="max-width:360px;">'
-    )
+    signature = resolve_mail_signature(fallback_sender_name, user=sender)
+    signature_text, signature_html = build_signature_blocks(signature)
 
     html_body = (
         "<p>Dear Team,</p>"
@@ -2293,7 +2323,7 @@ def build_verification_email(
         "",
         "(See attached file for the transaction details.)",
         "",
-        *text_signature_lines,
+        signature_text,
     ]
     text_body = "\n".join(text_lines)
 

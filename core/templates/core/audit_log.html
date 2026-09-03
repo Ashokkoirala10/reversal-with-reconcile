@@ -5,203 +5,46 @@
     <div class="card-header-row">
         <h2>Audit log</h2>
     </div>
-    <p class="muted" style="margin-top:-6px;">Every file processed, across every user — admin only.</p>
+    <p class="muted" style="margin-top:-6px;">Every action taken across the system, with who did it and from where — admin only.</p>
 
-    <div class="segmented" role="tablist">
-        <button type="button" class="segmented-btn active" data-log-tab="reversal">Reversal</button>
-        <button type="button" class="segmented-btn" data-log-tab="reconcile">Reconcile</button>
+    <div class="log-panel-meta">
+        <span class="muted">{{ page_obj.paginator.count }} event{{ page_obj.paginator.count|pluralize }}</span>
+        <a class="btn btn-secondary btn-sm" href="{% url 'core:export_audit_log' %}">&#8595; Download .txt</a>
     </div>
 
-    <!-- ===================== REVERSAL ===================== -->
-    <div class="log-panel" id="log-panel-reversal">
-        <div class="log-panel-meta">
-            <span class="muted">{{ page_obj.paginator.count }} file{{ page_obj.paginator.count|pluralize }} processed</span>
-            <a class="btn btn-secondary btn-sm" href="{% url 'core:export_audit_log' %}">&#8595; Download Excel</a>
-        </div>
-
-        <div class="table-scroll">
-        <table>
-            <thead>
+    <div class="table-scroll">
+    <table>
+        <thead>
+        <tr>
+            <th>When</th>
+            <th>User</th>
+            <th>IP address</th>
+            <th>Action</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for event in page_obj %}
             <tr>
-                <th>#</th>
-                <th>When</th>
-                <th>Uploaded by</th>
-                <th>Source file</th>
-                <th>Generated file</th>
-                <th>Status</th>
-                <th>Passed</th>
-                <th title="Manual reversal (incl. failed-but-credited) / System reversal (incl. already-reversed) / Failed excl. credited / Timeout">Manual / System / Failed / Timeout</th>
-                <th>Prabhu reversal</th>
-                <th>Unrecognized bank</th>
-                <th>Dup. skipped</th>
+                <td>{{ event.when }}</td>
+                <td>{{ event.username|default:"anonymous" }}</td>
+                <td>{{ event.ip|default:"—" }}</td>
+                <td>{{ event.action }}</td>
             </tr>
-            </thead>
-            <tbody>
-            {% for log in page_obj %}
-                <tr>
-                    <td>{{ log.id }}</td>
-                    <td>{{ log.created_at|date:"Y-m-d H:i" }}</td>
-                    <td>{{ log.uploaded_by|default:"—" }}</td>
-                    <td>
-                        <a class="icon-btn" href="{% url 'core:download_file' log.id 'uploaded' %}" title="{{ log.uploaded_filename }}">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                        </a>
-                    </td>
-                    <td>
-                        {% if log.generated_file %}
-                            <a class="icon-btn" href="{% url 'core:download_file' log.id 'generated' %}" title="{{ log.generated_filename }}">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                            </a>
-                        {% else %}
-                            <span class="muted">—</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if log.status == "SUCCESS" %}
-                            <span class="badge badge-success">Success</span>
-                        {% else %}
-                            <span class="badge badge-failed" title="{{ log.error_message }}">Failed</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if log.passed %}
-                            <span class="badge badge-passed" title="by {{ log.passed_by }}">Passed</span>
-                        {% elif log.status == "SUCCESS" %}
-                            <span class="badge badge-pending">Pending review</span>
-                        {% else %}
-                            <span class="muted">—</span>
-                        {% endif %}
-                    </td>
-                    <td>{{ log.manual_reversal_clean }} / {{ log.system_reversal_clean }} / {{ log.failed_excl_credited }} / {{ log.timeout_count }}</td>
-                    <td>{{ log.prabhu_rerouted }}</td>
-                    <td>
-                        {% if log.unrecognized_debtor_bank_rows %}
-                            <span class="badge badge-pending" title="{{ log.unrecognized_debtor_banks|join:', ' }}">{{ log.unrecognized_debtor_bank_rows }}</span>
-                        {% else %}
-                            0
-                        {% endif %}
-                    </td>
-                    <td>{{ log.duplicate_skipped }}</td>
-                </tr>
-            {% empty %}
-                <tr><td colspan="11" class="muted">No files processed yet.</td></tr>
-            {% endfor %}
-            </tbody>
-        </table>
-        </div>
-
-        <div class="pagination">
-            {% if page_obj.has_previous %}
-                <a href="?page={{ page_obj.previous_page_number }}#reversal">&larr; Previous</a>
-            {% endif %}
-            <span class="muted">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
-            {% if page_obj.has_next %}
-                <a href="?page={{ page_obj.next_page_number }}#reversal">Next &rarr;</a>
-            {% endif %}
-        </div>
+        {% empty %}
+            <tr><td colspan="4" class="muted">No activity recorded yet.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
     </div>
 
-    <!-- ===================== RECONCILE ===================== -->
-    <div class="log-panel" id="log-panel-reconcile" style="display:none;">
-        <div class="log-panel-meta">
-            <span class="muted">{{ rc_page_obj.paginator.count }} run{{ rc_page_obj.paginator.count|pluralize }} processed</span>
-            <a class="btn btn-secondary btn-sm" href="{% url 'reconcile:export_day_breakdown' %}">&#8595; Download Excel</a>
-        </div>
-
-        <div class="table-scroll">
-        <table>
-            <thead>
-            <tr>
-                <th>#</th>
-                <th>When</th>
-                <th>Uploaded by</th>
-                <th>Files</th>
-                <th>Passed</th>
-                <th>Total txns</th>
-                <th>Reconciled / Outstanding</th>
-                <th title="SCT / NCHL / Khalti flagged rows">Flagged (SCT/NCHL/Khalti)</th>
-                <th>Failed On-Us / Off-Us</th>
-                <th>Need To Reversal</th>
-            </tr>
-            </thead>
-            <tbody>
-            {% for run in rc_page_obj %}
-                <tr>
-                    <td>{{ run.id }}</td>
-                    <td>{{ run.created_at|date:"Y-m-d H:i" }}</td>
-                    <td>{{ run.uploaded_by|default:"—" }}</td>
-                    <td>
-                        <span style="display:inline-flex; gap:8px;">
-                        {% if run.transaction_file %}
-                            <a class="icon-btn" href="{% url 'reconcile:download_file' run.id 'uploaded' %}" title="Uploaded: {{ run.transaction_filename }}">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                            </a>
-                        {% endif %}
-                        {% if run.report_file %}
-                            <a class="icon-btn" href="{% url 'reconcile:download_file' run.id 'generated' %}" title="Generated report">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                            </a>
-                        {% endif %}
-                        {% if run.bundle_zip %}
-                            <a class="icon-btn" href="{% url 'reconcile:download_file' run.id 'bundle' %}" title="Download all (transaction data + statements) as .zip">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v6M9 6h6M9 12h.01M9 15h.01M9 18h.01M13 12h2v6h-2z"/></svg>
-                            </a>
-                        {% endif %}
-                        </span>
-                    </td>
-                    <td>
-                        {% if run.passed %}
-                            <span class="badge badge-passed" title="by {{ run.passed_by }}">Passed</span>
-                        {% else %}
-                            <span class="badge badge-pending">Pending review</span>
-                        {% endif %}
-                    </td>
-                    <td>{{ run.total_transactions }}</td>
-                    <td>{{ run.grand_total_reconciled }} / {{ run.grand_total_outstanding }}</td>
-                    <td>{{ run.sct_flagged }} / {{ run.nchl_flagged }} / {{ run.khalti_flagged }}</td>
-                    <td>{{ run.failed_onus_count }} / {{ run.failed_offus_count }}</td>
-                    <td>{{ run.need_reversal_count }}</td>
-                </tr>
-            {% empty %}
-                <tr><td colspan="10" class="muted">No reconcile runs yet.</td></tr>
-            {% endfor %}
-            </tbody>
-        </table>
-        </div>
-
-        <div class="pagination">
-            {% if rc_page_obj.has_previous %}
-                <a href="?rpage={{ rc_page_obj.previous_page_number }}#reconcile">&larr; Previous</a>
-            {% endif %}
-            <span class="muted">Page {{ rc_page_obj.number }} of {{ rc_page_obj.paginator.num_pages }}</span>
-            {% if rc_page_obj.has_next %}
-                <a href="?rpage={{ rc_page_obj.next_page_number }}#reconcile">Next &rarr;</a>
-            {% endif %}
-        </div>
+    <div class="pagination">
+        {% if page_obj.has_previous %}
+            <a href="?page={{ page_obj.previous_page_number }}">&larr; Previous</a>
+        {% endif %}
+        <span class="muted">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+        {% if page_obj.has_next %}
+            <a href="?page={{ page_obj.next_page_number }}">Next &rarr;</a>
+        {% endif %}
     </div>
 </div>
-
-<script>
-(function () {
-    var buttons = document.querySelectorAll('.segmented-btn[data-log-tab]');
-    var panels = document.querySelectorAll('.log-panel');
-
-    function activate(tab) {
-        var valid = Array.prototype.map.call(buttons, function (b) { return b.getAttribute('data-log-tab'); });
-        if (valid.indexOf(tab) === -1) tab = 'reversal';
-        buttons.forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-log-tab') === tab); });
-        panels.forEach(function (p) { p.style.display = (p.id === 'log-panel-' + tab) ? '' : 'none'; });
-    }
-
-    buttons.forEach(function (b) {
-        b.addEventListener('click', function () {
-            var tab = b.getAttribute('data-log-tab');
-            activate(tab);
-            window.location.hash = tab;
-        });
-    });
-
-    activate((window.location.hash || '').replace('#', '') || 'reversal');
-})();
-</script>
 {% endblock %}
