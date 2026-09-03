@@ -12,6 +12,9 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
+from core import switch_db
+from core.audit import log_action
+from core.forms import DbFetchForm
 from core.services import ProcessingError, build_bank_statement_index, normalize_reference_id
 
 from .banks import BANKS
@@ -62,25 +65,52 @@ def _panel_context(request):
 @login_required
 def reconcile_view(request):
     if request.method == "POST":
+        mode = request.POST.get("mode", "upload")
         form = ReconcileUploadForm(request.POST, request.FILES)
-        if form.is_valid():
+        if mode == "db_fetch":
+            form.fields["transaction_file"].required = False
+        db_fetch_form = DbFetchForm(request.POST) if mode == "db_fetch" else DbFetchForm()
+
+        forms_valid = form.is_valid() and (mode != "db_fetch" or db_fetch_form.is_valid())
+        if forms_valid:
             with tempfile.TemporaryDirectory(prefix="reconcile_") as tmp_dir_str:
                 tmp_dir = Path(tmp_dir_str)
 
-                txn_upload = form.cleaned_data["transaction_file"]
-                txn_path = _save_upload_to(tmp_dir, txn_upload, "txn")
+                if mode == "db_fetch":
+                    from_date = db_fetch_form.cleaned_data["from_date"]
+                    to_date = db_fetch_form.cleaned_data["to_date"]
+                    try:
+                        workbook_bytes, row_count = switch_db.fetch_ibft_export(from_date, to_date)
+                    except switch_db.SwitchDBError as exc:
+                        return render(
+                            request,
+                            "reconcile/reconcile.html",
+                            {"form": form, "db_fetch_form": db_fetch_form, "error": str(exc), **_panel_context(request)},
+                        )
+                    date_part = f"{from_date:%Y-%m-%d}" if from_date == to_date else f"{from_date:%Y-%m-%d}_to_{to_date:%Y-%m-%d}"
+                    txn_name = f"DB_Fetch_{date_part}.xlsx"
+                    txn_path = tmp_dir / txn_name
+                    txn_path.write_bytes(workbook_bytes)
+                else:
+                    txn_upload = form.cleaned_data["transaction_file"]
+                    txn_name = txn_upload.name
+                    txn_path = _save_upload_to(tmp_dir, txn_upload, "txn")
 
                 try:
                     transactions = load_transactions(txn_path)
                 except TransactionFileError as exc:
-                    return render(request, "reconcile/reconcile.html", {"form": form, "error": str(exc), **_panel_context(request)})
+                    return render(
+                        request,
+                        "reconcile/reconcile.html",
+                        {"form": form, "db_fetch_form": db_fetch_form, "error": str(exc), **_panel_context(request)},
+                    )
 
                 bank_files: dict[str, list[Path]] = {}
                 # Keep (arcname, saved path) for every uploaded file so we
                 # can bundle everything — transaction data + every bank
                 # statement, under their original names — into one .zip
                 # further down, without re-reading the uploads.
-                bundle_entries: list[tuple[str, Path]] = [(txn_upload.name, txn_path)]
+                bundle_entries: list[tuple[str, Path]] = [(txn_name, txn_path)]
                 for bank_key, uploaded_files in form.statement_files().items():
                     bank_label = next((b.display_name for b in BANKS if b.key == bank_key), bank_key)
                     paths = []
@@ -105,7 +135,7 @@ def reconcile_view(request):
                     return render(
                         request,
                         "reconcile/reconcile.html",
-                        {"form": form, "error": str(exc), **_panel_context(request)},
+                        {"form": form, "db_fetch_form": db_fetch_form, "error": str(exc), **_panel_context(request)},
                     )
 
                 t0 = time.perf_counter()
@@ -113,22 +143,22 @@ def reconcile_view(request):
                 result.warnings.extend(statement_warnings)
                 elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
-                output_filename = f"reconcile_report_{txn_upload.name.rsplit('.', 1)[0]}.xlsx"
+                output_filename = f"reconcile_report_{txn_name.rsplit('.', 1)[0]}.xlsx"
                 tmp_output_path = tmp_dir / output_filename
-                save_workbook(result, txn_upload.name, tmp_output_path)
+                save_workbook(result, txn_name, tmp_output_path)
 
                 # One .zip with the transaction file plus every statement
                 # uploaded alongside it, so the whole source-document set
                 # behind this report can be downloaded in a single click
                 # instead of one file at a time.
-                bundle_filename = f"reconcile_bundle_{txn_upload.name.rsplit('.', 1)[0]}.zip"
+                bundle_filename = f"reconcile_bundle_{txn_name.rsplit('.', 1)[0]}.zip"
                 tmp_bundle_path = tmp_dir / bundle_filename
                 with zipfile.ZipFile(tmp_bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
                     for arcname, path in bundle_entries:
                         zf.write(path, arcname=arcname)
 
                 run = ReconcileRun(
-                    transaction_filename=txn_upload.name,
+                    transaction_filename=txn_name,
                     uploaded_by=request.user.username if request.user.is_authenticated else "",
                     statements_uploaded=result.statements_uploaded,
                     statements_missing=result.statements_missing,
@@ -174,18 +204,21 @@ def reconcile_view(request):
                 # the audit log the same way the generated report can (see
                 # download_file_view() below).
                 with open(txn_path, "rb") as f:
-                    run.transaction_file.save(txn_upload.name, File(f), save=False)
+                    run.transaction_file.save(txn_name, File(f), save=False)
                 with open(tmp_bundle_path, "rb") as f:
                     run.bundle_zip.save(bundle_filename, File(f), save=False)
                 run.save()
 
+                source_desc = f"fetched from DB ({from_date} to {to_date})" if mode == "db_fetch" else "uploaded file"
+                log_action(request, f"Ran reconciliation {source_desc}: {txn_name} (#{run.id}, {run.total_transactions} txns)")
                 return redirect(reverse("reconcile:result", args=[run.id]))
     else:
         form = ReconcileUploadForm()
+        db_fetch_form = DbFetchForm()
 
     banks_available = [b for b in BANKS if b.available_by_default]
     banks_pending = [b for b in BANKS if not b.available_by_default]
-    ctx = {"form": form, "banks_available": banks_available, "banks_pending": banks_pending}
+    ctx = {"form": form, "db_fetch_form": db_fetch_form, "banks_available": banks_available, "banks_pending": banks_pending}
     ctx.update(_panel_context(request))
     return render(request, "reconcile/reconcile.html", ctx)
 
@@ -223,6 +256,7 @@ def toggle_passed_view(request, run_id):
         run.passed_by = ""
         run.passed_at = None
     run.save(update_fields=["passed", "passed_by", "passed_at"])
+    log_action(request, f"Marked reconcile run #{run.id} as {'passed' if run.passed else 'not passed'}")
 
     next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or reverse("reconcile:reconcile")
     return redirect(next_url)
@@ -243,6 +277,8 @@ def download_file_view(request, run_id, kind):
 
     if not field:
         raise Http404("File not available")
+
+    log_action(request, f"Downloaded {kind} file for reconcile run #{run.id}: {filename or field.name}")
 
     return FileResponse(field.open("rb"), as_attachment=True, filename=filename or field.name)
 

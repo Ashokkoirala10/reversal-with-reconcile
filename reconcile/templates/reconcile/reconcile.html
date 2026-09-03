@@ -18,11 +18,37 @@
 
         <form method="post" enctype="multipart/form-data" id="reconcile-form">
             {% csrf_token %}
+            <input type="hidden" name="mode" id="reconcile-mode-input" value="{% if request.POST.mode == 'db_fetch' %}db_fetch{% else %}upload{% endif %}">
 
-            <div class="field">
+            <div class="source-toggle" style="margin-bottom:14px;">
+                <button type="button" class="source-toggle-btn" id="txn-mode-upload-btn">Upload file</button>
+                <button type="button" class="source-toggle-btn" id="txn-mode-db-btn">Fetch from DB</button>
+            </div>
+
+            <div class="field" id="txn-upload-field">
                 <label for="{{ form.transaction_file.id_for_label }}">{{ form.transaction_file.label }}</label>
                 {{ form.transaction_file }}
                 {% if form.transaction_file.errors %}<div class="error-box">{{ form.transaction_file.errors }}</div>{% endif %}
+            </div>
+
+            <div id="txn-db-field">
+                <div class="field-inline-row">
+                    <label for="{{ db_fetch_form.from_date.id_for_label }}">From</label>
+                    {{ db_fetch_form.from_date }}
+                </div>
+                {% if db_fetch_form.from_date.errors %}
+                    <div class="error-box">{{ db_fetch_form.from_date.errors }}</div>
+                {% endif %}
+                <div class="field-inline-row">
+                    <label for="{{ db_fetch_form.to_date.id_for_label }}">To</label>
+                    {{ db_fetch_form.to_date }}
+                </div>
+                {% if db_fetch_form.to_date.errors %}
+                    <div class="error-box">{{ db_fetch_form.to_date.errors }}</div>
+                {% endif %}
+                {% if db_fetch_form.non_field_errors %}
+                    <div class="error-box">{{ db_fetch_form.non_field_errors }}</div>
+                {% endif %}
             </div>
 
             <div class="section-label" style="margin-top:18px;">Bank statements ({{ banks_available|length }})</div>
@@ -211,6 +237,28 @@ document.getElementById('reconcile-form').addEventListener('submit', function ()
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Reconciling\u2026';
 });
+</script>
+<script>
+(function () {
+    var modeInput = document.getElementById('reconcile-mode-input');
+    var uploadField = document.getElementById('txn-upload-field');
+    var dbField = document.getElementById('txn-db-field');
+    var uploadBtn = document.getElementById('txn-mode-upload-btn');
+    var dbBtn = document.getElementById('txn-mode-db-btn');
+    if (!modeInput || !uploadField || !dbField || !uploadBtn || !dbBtn) return;
+
+    function setMode(mode) {
+        modeInput.value = mode;
+        uploadField.style.display = mode === 'upload' ? '' : 'none';
+        dbField.style.display = mode === 'db_fetch' ? '' : 'none';
+        uploadBtn.classList.toggle('is-active', mode === 'upload');
+        dbBtn.classList.toggle('is-active', mode === 'db_fetch');
+    }
+
+    uploadBtn.addEventListener('click', function () { setMode('upload'); });
+    dbBtn.addEventListener('click', function () { setMode('db_fetch'); });
+    setMode(modeInput.value);
+})();
 </script>
 <script>
 (function () {

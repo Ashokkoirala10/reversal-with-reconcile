@@ -51,4 +51,12 @@ urlpatterns = [
     path("dashboard/export/days/", views.export_day_breakdown_view, name="export_day_breakdown"),
     path("dashboard/export/member-report/", views.export_member_report_view, name="export_member_report"),
     path("dashboard/export/aggregator-report/", views.export_aggregator_report_view, name="export_aggregator_report"),
+    path("dashboard/general/", views.general_report_view, name="general_report"),
+    path("dashboard/general/export/", views.export_general_report_view, name="export_general_report"),
+    path("dashboard/general/export/member/", views.export_general_member_view, name="export_general_member"),
+    path("dashboard/general/export/aggregator/", views.export_general_aggregator_view, name="export_general_aggregator"),
+    path("dashboard/general/export/issuer/", views.export_general_issuer_view, name="export_general_issuer"),
+    path("dashboard/general/export/acquirer/", views.export_general_acquirer_view, name="export_general_acquirer"),
+    path("dashboard/general/export/failed/", views.export_general_failed_view, name="export_general_failed"),
+    path("dashboard/general/export/buckets/", views.export_general_buckets_view, name="export_general_buckets"),
 ]

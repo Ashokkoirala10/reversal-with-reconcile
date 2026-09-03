@@ -19,6 +19,33 @@ class UploadForm(forms.Form):
         return f
 
 
+class DbFetchForm(forms.Form):
+    """"Fetch from DB" alternative to uploading the exported .xlsx by hand
+    (see core/switch_db.py) — pulls every transaction from the switch
+    database across [from_date, to_date], in the same shape
+    core.services.process_ibft_file() expects from an uploaded
+    ibft-transaction file. If to_date is today, the fetch is capped at
+    "right now" instead of running through midnight — see
+    core.switch_db.fetch_ibft_export()."""
+
+    from_date = forms.DateField(
+        label="From date",
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+    to_date = forms.DateField(
+        label="To date",
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+
+    def clean(self):
+        cleaned = super().clean()
+        from_date = cleaned.get("from_date")
+        to_date = cleaned.get("to_date")
+        if from_date and to_date and to_date < from_date:
+            self.add_error("to_date", "'To date' can't be before 'From date'.")
+        return cleaned
+
+
 class VerificationFormatUploadForm(forms.Form):
     dispute_file = forms.FileField(
         label="Dispute transaction file",

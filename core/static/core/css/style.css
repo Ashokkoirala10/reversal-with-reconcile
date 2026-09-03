@@ -221,7 +221,7 @@
         display: inline-block;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    input[type=file], input[type=text], input[type=password], input[type=email] {
+    input[type=file], input[type=text], input[type=password], input[type=email], input[type=date] {
         width: 100%;
         padding: 10px 12px;
         border: 1.5px solid var(--border);
@@ -245,7 +245,7 @@
         border-color: var(--primary-light);
         box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
     }
-    input[type=file]:focus, input[type=text]:focus, input[type=password]:focus, input[type=email]:focus {
+    input[type=file]:focus, input[type=text]:focus, input[type=password]:focus, input[type=email]:focus, input[type=date]:focus {
         outline: none;
         border-color: var(--primary-light);
         box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
@@ -748,6 +748,20 @@
         grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
         gap: 12px 16px;
     }
+    /* Reversal's "My activity" card (core/upload.html): Uploaded+Generated
+       and Passed+Bank statement always paired side by side. Fixed 2-column
+       grid (not .activity-box-grid's auto-fit above, which falls back to
+       stacking in a narrow card) — the 4 items are already in that pairing
+       order in the markup, so a plain 2-column grid pairs them for free. */
+    .reversal-activity-grid {
+        grid-template-columns: 1fr 1fr !important;
+        gap: 10px 14px;
+    }
+    .reversal-activity-grid .activity-box-item .v { min-height: 0; }
+    /* The Bank stmt badge's "(N+N flagged)" suffix can be longer than the
+       narrow 2-column cell; let it wrap instead of getting clipped by
+       .scroll-body's overflow-x: hidden. */
+    .activity-box-item .v .badge { white-space: normal; text-align: center; }
     @media (max-width: 420px) {
         .activity-box-grid { grid-template-columns: repeat(2, 1fr); }
     }
@@ -865,6 +879,7 @@
         background: linear-gradient(120deg, var(--teal-dark), var(--teal));
         box-shadow: 0 3px 10px rgba(13, 148, 136, 0.25);
     }
+    a.dash-menu-item { text-decoration: none; }
     .dash-sidebar-hint {
         font-size: 12px;
         line-height: 1.5;
@@ -899,6 +914,7 @@
 
 /* Dashboard: compact From/To date range filter */
 .date-range-filter input[type="date"] {
+    width: auto;
     padding: 8px 10px;
     border: 1.5px solid var(--border);
     border-radius: 8px;
@@ -906,6 +922,7 @@
     font-weight: 600;
     color: var(--primary-dark);
     background: #fbfcfe;
+    margin-top: 0;
 }
 .date-range-filter .btn { padding: 8px 12px; }
 
@@ -990,3 +1007,43 @@
 @media (max-width: 1150px) {
     #reconcile-split .activity-collapse-toggle { display:none; }
 }
+
+/* Label + field on one row, labels sharing a fixed-width column so the
+   fields line up (e.g. "Fetch from DB"'s From/To date inputs). */
+.field-inline-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+.field-inline-row label {
+    width: 40px;
+    flex-shrink: 0;
+}
+.field-inline-row input[type="date"] {
+    flex: 1;
+    margin-top: 0;
+}
+
+/* Source-mode toggle (Upload file / Fetch from DB) */
+.source-toggle {
+    display: inline-flex;
+    padding: 3px;
+    border: 1.5px solid var(--border);
+    border-radius: 9px;
+    background: #fbfcfe;
+    gap: 3px;
+}
+.source-toggle-btn {
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+.source-toggle-btn:hover { color: var(--primary-dark); }
+.source-toggle-btn.is-active { background: var(--primary); color: white; }

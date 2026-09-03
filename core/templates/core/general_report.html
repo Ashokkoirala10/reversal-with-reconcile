@@ -1,0 +1,290 @@
+{% extends "core/base.html" %}
+{% load core_extras %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<div class="card dash-topbar">
+    <div class="dash-header-top">
+        <div>
+            <h2>General report</h2>
+            <p class="muted" style="margin-bottom:0;">
+                Live from the switch database for <strong>{{ selected_from|date:"d M Y" }}</strong>{% if selected_to != selected_from %} to <strong>{{ selected_to|date:"d M Y" }}</strong>{% endif %}
+            </p>
+        </div>
+        <div class="dash-actions">
+            <form method="get" class="year-filter date-range-filter">
+                <label for="gen-date-from">FROM</label>
+                <input id="gen-date-from" type="date" name="from" value="{{ selected_from|date:'Y-m-d' }}">
+                <label for="gen-date-to">TO</label>
+                <input id="gen-date-to" type="date" name="to" value="{{ selected_to|date:'Y-m-d' }}">
+                <button type="submit" class="btn btn-sm">Apply</button>
+                <a class="btn btn-secondary btn-sm" href="{% url 'core:export_general_report' %}?from={{ selected_from|date:'Y-m-d' }}&to={{ selected_to|date:'Y-m-d' }}">&#8595; Download Excel (all)</a>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="dash-layout">
+    <aside class="dash-sidebar">
+        <div class="dash-sidebar-title">Main Menu</div>
+        <nav class="dash-menu">
+            <a href="{% url 'core:dashboard' %}#overview" class="dash-menu-item dash-menu-parent">
+                <span>Reversal</span>
+            </a>
+            <div class="dash-menu-divider"></div>
+            <a href="{% url 'core:dashboard' %}#reconcile" class="dash-menu-item dash-menu-parent">
+                <span>Reconcile</span>
+            </a>
+            <div class="dash-menu-divider"></div>
+            <a href="{% url 'core:general_report' %}" class="dash-menu-item dash-menu-parent active">
+                <span>General</span>
+            </a>
+        </nav>
+    </aside>
+
+    <section class="dash-content">
+        <div class="dash-panel">
+
+{% if error %}
+    <div class="card">
+        <p class="muted" style="color:var(--red);">Could not read the switch database: {{ error }}</p>
+    </div>
+{% else %}
+
+<div class="card">
+    <div class="section-label" style="margin-top:0;">Volume</div>
+    <div class="stat-grid">
+        <div class="stat"><div class="num">{{ totals.total_count }}</div><div class="label">Total transactions</div></div>
+        <div class="stat"><div class="num">{{ totals.success_count }}</div><div class="label">Success</div></div>
+        <div class="stat"><div class="num" title="Rs. {{ totals.success_amount|floatformat:2 }}">Rs. {{ totals.success_amount|npr }}</div><div class="label">Success amount</div></div>
+        <div class="stat stat-red"><div class="num">{{ totals.failed_count }}</div><div class="label">Failed</div></div>
+        <div class="stat stat-red"><div class="num" title="Rs. {{ totals.failed_amount|floatformat:2 }}">Rs. {{ totals.failed_amount|npr }}</div><div class="label">Failed amount</div></div>
+        <div class="stat">
+            <div class="num" title="{% for b in totals.other_status_breakdown %}{{ b.status }}: {{ b.count }}{% if not forloop.last %}, {% endif %}{% endfor %}">{{ totals.other_count }}</div>
+            <div class="label">Other status (Reversal, in-flight, etc.)</div>
+        </div>
+        <div class="stat"><div class="num" title="Rs. {{ totals.other_amount|floatformat:2 }}">Rs. {{ totals.other_amount|npr }}</div><div class="label">Other status amount</div></div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header-row">
+        <h2>Member-wise report</h2>
+        <a class="btn btn-secondary btn-sm" href="{% url 'core:export_general_member' %}?from={{ selected_from|date:'Y-m-d' }}&to={{ selected_to|date:'Y-m-d' }}{% if member_query %}&member_q={{ member_query }}{% endif %}">&#8595; Download Excel</a>
+    </div>
+    <form method="get" class="year-filter" style="margin-bottom:14px;">
+        <input type="hidden" name="from" value="{{ selected_from|date:'Y-m-d' }}">
+        <input type="hidden" name="to" value="{{ selected_to|date:'Y-m-d' }}">
+        <label for="gen-member-q">Member</label>
+        <input type="text" id="gen-member-q" name="member_q" value="{{ member_query }}" placeholder="Search member name…" style="max-width:200px; margin-top:0;">
+        <button type="submit" class="btn btn-secondary btn-sm">Search</button>
+        {% if member_query %}<a class="btn btn-secondary btn-sm" href="?from={{ selected_from|date:"Y-m-d" }}&to={{ selected_to|date:"Y-m-d" }}#general-member">Clear</a>{% endif %}
+    </form>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Member</th><th>Success</th><th>Success amount</th><th>Failed</th><th>Failed amount</th><th>Total</th><th>Total amount</th></tr></thead>
+            <tbody>
+            {% for r in member_page %}
+                <tr>
+                    <td><strong>{{ r.name }}</strong></td>
+                    <td>{{ r.success_count }}</td>
+                    <td title="Rs. {{ r.success_amount|floatformat:2 }}">Rs. {{ r.success_amount|npr }}</td>
+                    <td>{{ r.failed_count }}</td>
+                    <td title="Rs. {{ r.failed_amount|floatformat:2 }}">Rs. {{ r.failed_amount|npr }}</td>
+                    <td>{{ r.total_count }}</td>
+                    <td title="Rs. {{ r.total_amount|floatformat:2 }}">Rs. {{ r.total_amount|npr }}</td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="7" class="muted">No transactions in this window{% if member_query %} matching "{{ member_query }}"{% endif %}.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="pagination">
+        {% if member_page.has_previous %}<a href="?member_page={{ member_page.previous_page_number }}&from={{ selected_from|date:"Y-m-d" }}&to={{ selected_to|date:"Y-m-d" }}{% if member_query %}&member_q={{ member_query }}{% endif %}#general-member">&larr; Previous</a>{% endif %}
+        {% if member_page.paginator.num_pages > 1 %}<span class="muted">Page {{ member_page.number }} of {{ member_page.paginator.num_pages }}</span>{% endif %}
+        {% if member_page.has_next %}<a href="?member_page={{ member_page.next_page_number }}&from={{ selected_from|date:"Y-m-d" }}&to={{ selected_to|date:"Y-m-d" }}{% if member_query %}&member_q={{ member_query }}{% endif %}#general-member">Next &rarr;</a>{% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header-row">
+        <h2>Aggregator-wise report</h2>
+        <a class="btn btn-secondary btn-sm" href="{% url 'core:export_general_aggregator' %}?from={{ selected_from|date:'Y-m-d' }}&to={{ selected_to|date:'Y-m-d' }}{% if aggregator_query %}&aggregator_q={{ aggregator_query }}{% endif %}">&#8595; Download Excel</a>
+    </div>
+    <form method="get" class="year-filter" style="margin-bottom:14px;">
+        <input type="hidden" name="from" value="{{ selected_from|date:'Y-m-d' }}">
+        <input type="hidden" name="to" value="{{ selected_to|date:'Y-m-d' }}">
+        <label for="gen-aggregator-q">Aggregator</label>
+        <input type="text" id="gen-aggregator-q" name="aggregator_q" value="{{ aggregator_query }}" placeholder="Search aggregator name…" style="max-width:200px; margin-top:0;">
+        <button type="submit" class="btn btn-secondary btn-sm">Search</button>
+        {% if aggregator_query %}<a class="btn btn-secondary btn-sm" href="?from={{ selected_from|date:"Y-m-d" }}&to={{ selected_to|date:"Y-m-d" }}#general-aggregator">Clear</a>{% endif %}
+    </form>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Aggregator</th><th>Success</th><th>Success amount</th><th>Failed</th><th>Failed amount</th><th>Total</th><th>Total amount</th></tr></thead>
+            <tbody>
+            {% for r in aggregator_page %}
+                <tr>
+                    <td><strong>{{ r.name }}</strong></td>
+                    <td>{{ r.success_count }}</td>
+                    <td title="Rs. {{ r.success_amount|floatformat:2 }}">Rs. {{ r.success_amount|npr }}</td>
+                    <td>{{ r.failed_count }}</td>
+                    <td title="Rs. {{ r.failed_amount|floatformat:2 }}">Rs. {{ r.failed_amount|npr }}</td>
+                    <td>{{ r.total_count }}</td>
+                    <td title="Rs. {{ r.total_amount|floatformat:2 }}">Rs. {{ r.total_amount|npr }}</td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="7" class="muted">No transactions in this window{% if aggregator_query %} matching "{{ aggregator_query }}"{% endif %}.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="pagination">
+        {% if aggregator_page.has_previous %}<a href="?aggregator_page={{ aggregator_page.previous_page_number }}&from={{ selected_from|date:"Y-m-d" }}&to={{ selected_to|date:"Y-m-d" }}{% if aggregator_query %}&aggregator_q={{ aggregator_query }}{% endif %}#general-aggregator">&larr; Previous</a>{% endif %}
+        {% if aggregator_page.paginator.num_pages > 1 %}<span class="muted">Page {{ aggregator_page.number }} of {{ aggregator_page.paginator.num_pages }}</span>{% endif %}
+        {% if aggregator_page.has_next %}<a href="?aggregator_page={{ aggregator_page.next_page_number }}&from={{ selected_from|date:"Y-m-d" }}&to={{ selected_to|date:"Y-m-d" }}{% if aggregator_query %}&aggregator_q={{ aggregator_query }}{% endif %}#general-aggregator">Next &rarr;</a>{% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header-row">
+        <h2>Failed: On-Us vs Off-Us breakdown</h2>
+        <a class="btn btn-secondary btn-sm" href="{% url 'core:export_general_failed' %}?from={{ selected_from|date:'Y-m-d' }}&to={{ selected_to|date:'Y-m-d' }}">&#8595; Download Excel</a>
+    </div>
+    <div class="split" style="grid-template-columns: 1fr 1fr;">
+        <div class="onus-block">
+            <div class="onus-head">
+                <span>On-Us</span>
+                <span>{{ onus_offus.onus.count }} rows &middot; Rs. {{ onus_offus.onus.amount|npr }}</span>
+            </div>
+            <table>
+                <thead><tr><th>Reason</th><th>Count</th><th>%</th></tr></thead>
+                <tbody>
+                {% for r in onus_offus.onus.reasons %}
+                    <tr><td>{{ r.reason }}</td><td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
+                {% empty %}
+                    <tr><td colspan="3" class="muted">None.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="onus-block">
+            <div class="onus-head offus">
+                <span>Off-Us</span>
+                <span>{{ onus_offus.offus.count }} rows &middot; Rs. {{ onus_offus.offus.amount|npr }}</span>
+            </div>
+            <table>
+                <thead><tr><th>Reason</th><th>Count</th><th>%</th></tr></thead>
+                <tbody>
+                {% for r in onus_offus.offus.reasons %}
+                    <tr><td>{{ r.reason }}</td><td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
+                {% empty %}
+                    <tr><td colspan="3" class="muted">None.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header-row">
+        <h2>Success amount buckets (On-Us / Off-Us)</h2>
+        <a class="btn btn-secondary btn-sm" href="{% url 'core:export_general_buckets' %}?from={{ selected_from|date:'Y-m-d' }}&to={{ selected_to|date:'Y-m-d' }}">&#8595; Download Excel</a>
+    </div>
+    <p class="muted">Successful transactions grouped by amount range, split On-Us / Off-Us.</p>
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr><th>Amount range</th><th>On-Us count</th><th>On-Us amount</th><th>Off-Us count</th><th>Off-Us amount</th><th>Total count</th><th>Total amount</th></tr>
+            </thead>
+            <tbody>
+            {% for b in buckets %}
+                <tr>
+                    <td><strong>{{ b.label }}</strong></td>
+                    <td>{{ b.onus_count }}</td>
+                    <td title="Rs. {{ b.onus_amount|floatformat:2 }}">Rs. {{ b.onus_amount|npr }}</td>
+                    <td>{{ b.offus_count }}</td>
+                    <td title="Rs. {{ b.offus_amount|floatformat:2 }}">Rs. {{ b.offus_amount|npr }}</td>
+                    <td>{{ b.total_count }}</td>
+                    <td title="Rs. {{ b.total_amount|floatformat:2 }}">Rs. {{ b.total_amount|npr }}</td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="7" class="muted">No successful transactions in this window.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header-row">
+        <h2>Issuer &mdash; Debtor bank</h2>
+        <a class="btn btn-secondary btn-sm" href="{% url 'core:export_general_issuer' %}?from={{ selected_from|date:'Y-m-d' }}&to={{ selected_to|date:'Y-m-d' }}">&#8595; Download Excel</a>
+    </div>
+    <p class="muted">Every debtor (issuing) bank's transaction volume, split success / failed.</p>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Bank</th><th>Success</th><th>Success amount</th><th>Failed</th><th>Failed amount</th><th>Total</th><th>Total amount</th></tr></thead>
+            <tbody>
+            {% for r in issuer_page %}
+                <tr>
+                    <td><strong>{{ r.name }}</strong></td>
+                    <td>{{ r.success_count }}</td>
+                    <td title="Rs. {{ r.success_amount|floatformat:2 }}">Rs. {{ r.success_amount|npr }}</td>
+                    <td>{{ r.failed_count }}</td>
+                    <td title="Rs. {{ r.failed_amount|floatformat:2 }}">Rs. {{ r.failed_amount|npr }}</td>
+                    <td>{{ r.total_count }}</td>
+                    <td title="Rs. {{ r.total_amount|floatformat:2 }}">Rs. {{ r.total_amount|npr }}</td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="7" class="muted">No transactions in this window.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="pagination">
+        {% if issuer_page.has_previous %}<a href="?issuer_page={{ issuer_page.previous_page_number }}&from={{ selected_from|date:"Y-m-d" }}&to={{ selected_to|date:"Y-m-d" }}#general-issuer">&larr; Previous</a>{% endif %}
+        {% if issuer_page.paginator.num_pages > 1 %}<span class="muted">Page {{ issuer_page.number }} of {{ issuer_page.paginator.num_pages }}</span>{% endif %}
+        {% if issuer_page.has_next %}<a href="?issuer_page={{ issuer_page.next_page_number }}&from={{ selected_from|date:"Y-m-d" }}&to={{ selected_to|date:"Y-m-d" }}#general-issuer">Next &rarr;</a>{% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header-row">
+        <h2>Acquirer &mdash; Creditor bank</h2>
+        <a class="btn btn-secondary btn-sm" href="{% url 'core:export_general_acquirer' %}?from={{ selected_from|date:'Y-m-d' }}&to={{ selected_to|date:'Y-m-d' }}">&#8595; Download Excel</a>
+    </div>
+    <p class="muted">Every creditor (acquiring) bank's transaction volume, split success / failed.</p>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Bank</th><th>Success</th><th>Success amount</th><th>Failed</th><th>Failed amount</th><th>Total</th><th>Total amount</th></tr></thead>
+            <tbody>
+            {% for r in acquirer_page %}
+                <tr>
+                    <td><strong>{{ r.name }}</strong></td>
+                    <td>{{ r.success_count }}</td>
+                    <td title="Rs. {{ r.success_amount|floatformat:2 }}">Rs. {{ r.success_amount|npr }}</td>
+                    <td>{{ r.failed_count }}</td>
+                    <td title="Rs. {{ r.failed_amount|floatformat:2 }}">Rs. {{ r.failed_amount|npr }}</td>
+                    <td>{{ r.total_count }}</td>
+                    <td title="Rs. {{ r.total_amount|floatformat:2 }}">Rs. {{ r.total_amount|npr }}</td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="7" class="muted">No transactions in this window.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="pagination">
+        {% if acquirer_page.has_previous %}<a href="?acquirer_page={{ acquirer_page.previous_page_number }}&from={{ selected_from|date:"Y-m-d" }}&to={{ selected_to|date:"Y-m-d" }}#general-acquirer">&larr; Previous</a>{% endif %}
+        {% if acquirer_page.paginator.num_pages > 1 %}<span class="muted">Page {{ acquirer_page.number }} of {{ acquirer_page.paginator.num_pages }}</span>{% endif %}
+        {% if acquirer_page.has_next %}<a href="?acquirer_page={{ acquirer_page.next_page_number }}&from={{ selected_from|date:"Y-m-d" }}&to={{ selected_to|date:"Y-m-d" }}#general-acquirer">Next &rarr;</a>{% endif %}
+    </div>
+</div>
+
+{% endif %}
+        </div>
+    </section>
+</div>
+{% endblock %}
