@@ -1,21 +1,35 @@
 import tempfile
 import time
 import zipfile
+from email.mime.image import MIMEImage
 from pathlib import Path
 
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required, user_passes_test
+from django.contrib.staticfiles import finders
 from django.core.files import File
+from django.core.mail import EmailMultiAlternatives
 from django.core.paginator import Paginator
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.html import linebreaks
 from django.views.decorators.http import require_POST
 
 from core import switch_db
 from core.audit import log_action
 from core.forms import DbFetchForm
-from core.services import ProcessingError, build_bank_statement_index, normalize_reference_id
+from core.services import (
+    MAIL_SIGNATURE_IMAGE_CID,
+    ProcessingError,
+    build_bank_statement_index,
+    build_signature_blocks,
+    normalize_reference_id,
+    resolve_mail_signature,
+)
 
 from .banks import BANKS
 from .engine import reconcile
@@ -259,6 +273,117 @@ def toggle_passed_view(request, run_id):
     log_action(request, f"Marked reconcile run #{run.id} as {'passed' if run.passed else 'not passed'}")
 
     next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or reverse("reconcile:reconcile")
+    return redirect(next_url)
+
+
+def _parse_notify_emails(raw: str) -> tuple[list[str], list[str]]:
+    """Splits a comma/semicolon-separated address list, validates each,
+    and returns (valid, invalid) — both empty means nothing was typed in
+    at all."""
+    candidates = [a.strip() for a in raw.replace(";", ",").split(",") if a.strip()]
+    valid, invalid = [], []
+    for addr in candidates:
+        try:
+            validate_email(addr)
+        except ValidationError:
+            invalid.append(addr)
+        else:
+            valid.append(addr)
+    return valid, invalid
+
+
+@login_required
+@require_POST
+def update_issue_view(request, run_id):
+    """Shared-dashboard issue note (see ReconcileRun.issue_description
+    etc.): only the run's own uploader (or staff — same rule as
+    can_toggle_passed) can flag something unusual, mark it resolved, or
+    email others about it; everyone else viewing the shared "passed"
+    table sees the note read-only. One editable note per run, not a
+    comment thread, so the shared table always shows the current state
+    rather than a growing log."""
+    run = get_object_or_404(ReconcileRun, id=run_id)
+    next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or reverse("reconcile:reconcile")
+
+    if not can_toggle_passed(request.user, run):
+        messages.error(request, "Only the person who ran this reconciliation (or an admin) can edit its issue note.")
+        return redirect(next_url)
+
+    description = (request.POST.get("description") or "").strip()
+    resolved = request.POST.get("resolved") == "on"
+    action = request.POST.get("do") or "save"
+
+    run.issue_description = description
+    run.issue_resolved = resolved
+    run.issue_updated_by = request.user.username
+    run.issue_updated_at = timezone.now()
+    update_fields = ["issue_description", "issue_resolved", "issue_updated_by", "issue_updated_at"]
+
+    if action == "notify":
+        valid_to, invalid_to = _parse_notify_emails(request.POST.get("notify_emails") or "")
+        valid_cc, invalid_cc = _parse_notify_emails(request.POST.get("notify_cc") or "")
+        invalid = invalid_to + invalid_cc
+        if not description:
+            messages.error(request, "Add a description before notifying others.")
+        elif invalid:
+            messages.error(request, f"Not a valid email address: {', '.join(invalid)}")
+        elif not valid_to:
+            messages.error(request, "Enter at least one email address to notify.")
+        else:
+            run_url = request.build_absolute_uri(reverse("reconcile:result", args=[run.id]))
+            subject = f"[Reconcile] Issue flagged — {timezone.localtime(run.created_at):%Y-%m-%d} run #{run.id}"
+            fallback_name = request.user.get_full_name() or request.user.username
+            sig = resolve_mail_signature(fallback_name, user=request.user)
+            signature_text, signature_html = build_signature_blocks(sig)
+
+            details = [
+                ("Run", run_url),
+                ("Run date", f"{timezone.localtime(run.created_at):%Y-%m-%d %H:%M}"),
+                ("Uploaded by", run.uploaded_by or "—"),
+                ("Reconciled / Outstanding", f"{run.grand_total_reconciled} / {run.grand_total_outstanding}"),
+                ("Resolved", "Yes" if resolved else "No"),
+            ]
+            text_body = (
+                f"An issue was flagged on a reconcile run by {request.user.username}.\n\n"
+                + "\n".join(f"{label}: {value}" for label, value in details)
+                + f"\n\nDescription:\n{description}\n\n{signature_text}\n"
+            )
+            details_html = "".join(
+                f'<tr><td style="padding:2px 8px 2px 0;color:#555;">{label}</td><td style="padding:2px 0;">{value}</td></tr>'
+                for label, value in details
+            )
+            html_body = (
+                f"<p>An issue was flagged on a reconcile run by <strong>{request.user.username}</strong>.</p>"
+                f'<table style="border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:13px;">{details_html}</table>'
+                f"<p><strong>Description:</strong></p>{linebreaks(description, autoescape=True)}"
+                f"<p>{signature_html}</p>"
+            )
+            try:
+                email = EmailMultiAlternatives(subject=subject, body=text_body, to=valid_to, cc=valid_cc or None)
+                email.attach_alternative(html_body, "text/html")
+                signature_path = finders.find("core/img/mail-signature.png")
+                if signature_path:
+                    email.mixed_subtype = "related"
+                    with open(signature_path, "rb") as img_file:
+                        signature_image = MIMEImage(img_file.read())
+                    signature_image.add_header("Content-ID", f"<{MAIL_SIGNATURE_IMAGE_CID}>")
+                    signature_image.add_header("Content-Disposition", "inline", filename="mail-signature.png")
+                    email.attach(signature_image)
+                email.send(fail_silently=False)
+            except Exception as exc:  # noqa: BLE001 - surface the SMTP error to the caller
+                messages.error(request, f"Note saved, but sending the notification failed: {exc}")
+            else:
+                run.issue_notified_at = timezone.now()
+                run.issue_notified_by = request.user.username
+                run.issue_notified_to = ", ".join(valid_to)
+                run.issue_notified_cc = ", ".join(valid_cc)
+                update_fields += ["issue_notified_at", "issue_notified_by", "issue_notified_to", "issue_notified_cc"]
+                recipients_desc = ", ".join(valid_to) + (f" (cc: {', '.join(valid_cc)})" if valid_cc else "")
+                messages.success(request, f"Notification sent to {recipients_desc}.")
+                log_action(request, f"Notified about reconcile run #{run.id} issue: {recipients_desc}")
+
+    run.save(update_fields=update_fields)
+    log_action(request, f"Updated issue note on reconcile run #{run.id} (resolved={resolved})")
     return redirect(next_url)
 
 

@@ -272,9 +272,11 @@ class VerificationBankContactForm(forms.ModelForm):
 
 
 class MailSignatureForm(forms.ModelForm):
-    """Lets an Admin (is_staff) user add/edit who verification emails are
-    signed as (core.models.MailSignature), from the "Extra" page's "Mail
-    signature" tab — no code change or deploy needed when staff change."""
+    """Lets any logged-in user add/edit their own outgoing-email
+    signature(s) (core.models.MailSignature), from the "Extra" page's
+    "Mail signature" tab — `user` is set server-side to the logged-in
+    user, not exposed as a form field, so each person only ever manages
+    their own."""
 
     class Meta:
         model = MailSignature

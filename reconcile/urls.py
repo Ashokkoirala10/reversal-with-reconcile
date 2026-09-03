@@ -8,6 +8,7 @@ urlpatterns = [
     path("", views.reconcile_view, name="reconcile"),
     path("result/<int:run_id>/", views.result_view, name="result"),
     path("toggle-passed/<int:run_id>/", views.toggle_passed_view, name="toggle_passed"),
+    path("issue/<int:run_id>/", views.update_issue_view, name="update_issue"),
     path("download/<int:run_id>/<str:kind>/", views.download_file_view, name="download_file"),
     path("audit-log/", views.audit_log_view, name="audit_log"),
     path("day/<str:date_str>/", views.day_detail_view, name="day_detail"),

@@ -106,6 +106,27 @@ class ReconcileRun(models.Model):
     success_buckets_onus = models.JSONField(default=dict, blank=True)
     success_buckets_offus = models.JSONField(default=dict, blank=True)
 
+    # --- Issue note (shared dashboard) ---
+    # One free-text note per run — editable only by the run's own
+    # uploader (or staff), see reconcile.views.can_toggle_passed(); every
+    # other viewer of the shared "passed" table sees it read-only. Lets
+    # the person who actually ran the reconciliation flag something
+    # unusual about that day, mark it resolved once it's sorted out, and
+    # optionally email others for anything urgent. Deliberately a single
+    # note edited in place (not a comment thread) — see update_issue_view.
+    issue_description = models.TextField(blank=True, default="")
+    issue_resolved = models.BooleanField(default=False)
+    issue_updated_by = models.CharField(max_length=150, blank=True, default="")
+    issue_updated_at = models.DateTimeField(null=True, blank=True)
+
+    # Set only when someone actually sends the "notify others" email (not
+    # just on every note edit) — issue_notified_to/_cc is whatever
+    # address(es) they typed in at that moment, not a stored mailing list.
+    issue_notified_at = models.DateTimeField(null=True, blank=True)
+    issue_notified_by = models.CharField(max_length=150, blank=True, default="")
+    issue_notified_to = models.CharField(max_length=255, blank=True, default="")
+    issue_notified_cc = models.CharField(max_length=255, blank=True, default="")
+
     class Meta:
         ordering = ["-created_at"]
 

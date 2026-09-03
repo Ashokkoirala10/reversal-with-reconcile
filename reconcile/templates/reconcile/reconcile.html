@@ -97,6 +97,7 @@
                 <th>Files</th>
                 <th>Reconc. / Outs.</th>
                 <th>Passed by</th>
+                <th>Issue</th>
             </tr>
             </thead>
             <tbody>
@@ -126,9 +127,46 @@
                     </td>
                     <td>{{ run.grand_total_reconciled }} / {{ run.grand_total_outstanding }}</td>
                     <td>{{ run.passed_by|default:"—" }}</td>
+                    <td>
+                        {% if request.user.is_staff or request.user.username == run.uploaded_by %}
+                            <button type="button" class="btn btn-xs {% if run.issue_description and not run.issue_resolved %}btn-issue-open{% elif run.issue_description %}btn-issue-resolved{% else %}btn-secondary{% endif %}"
+                                    onclick="openIssueModal(this)"
+                                    data-run-id="{{ run.id }}"
+                                    data-can-edit="1"
+                                    data-description="{{ run.issue_description }}"
+                                    data-resolved="{{ run.issue_resolved|yesno:'1,0' }}"
+                                    data-updated-by="{{ run.issue_updated_by }}"
+                                    data-updated-at="{% if run.issue_updated_at %}{{ run.issue_updated_at|date:'Y-m-d H:i' }}{% endif %}"
+                                    data-notified-to="{{ run.issue_notified_to }}"
+                                    data-notified-cc="{{ run.issue_notified_cc }}"
+                                    data-notified-at="{% if run.issue_notified_at %}{{ run.issue_notified_at|date:'Y-m-d H:i' }}{% endif %}"
+                                    data-notified-by="{{ run.issue_notified_by }}">
+                                {% if run.issue_description and not run.issue_resolved %}&#9888; Open
+                                {% elif run.issue_description %}&#10003; Resolved
+                                {% else %}+ Note{% endif %}
+                            </button>
+                        {% elif run.issue_description %}
+                            <button type="button" class="btn btn-xs {% if not run.issue_resolved %}btn-issue-open{% else %}btn-issue-resolved{% endif %}"
+                                    onclick="openIssueModal(this)"
+                                    data-run-id="{{ run.id }}"
+                                    data-can-edit="0"
+                                    data-description="{{ run.issue_description }}"
+                                    data-resolved="{{ run.issue_resolved|yesno:'1,0' }}"
+                                    data-updated-by="{{ run.issue_updated_by }}"
+                                    data-updated-at="{% if run.issue_updated_at %}{{ run.issue_updated_at|date:'Y-m-d H:i' }}{% endif %}"
+                                    data-notified-to="{{ run.issue_notified_to }}"
+                                    data-notified-cc="{{ run.issue_notified_cc }}"
+                                    data-notified-at="{% if run.issue_notified_at %}{{ run.issue_notified_at|date:'Y-m-d H:i' }}{% endif %}"
+                                    data-notified-by="{{ run.issue_notified_by }}">
+                                {% if not run.issue_resolved %}&#9888; Open{% else %}&#10003; Resolved{% endif %}
+                            </button>
+                        {% else %}
+                            <span class="muted">—</span>
+                        {% endif %}
+                    </td>
                 </tr>
             {% empty %}
-                <tr><td colspan="5" class="muted">No passed reports yet — mark one as passed from "My activity" &rarr;</td></tr>
+                <tr><td colspan="6" class="muted">No passed reports yet — mark one as passed from "My activity" &rarr;</td></tr>
             {% endfor %}
             </tbody>
         </table>
@@ -162,7 +200,7 @@
                             <span class="badge badge-failed" title="{{ run.warnings|join:' | ' }}">&#9888; {{ run.warnings|length }} warning{{ run.warnings|pluralize }}</span>
                         {% endif %}
                         {% if run.passed %}
-                            <span class="badge badge-passed">&#10003; Passed</span>
+                            <span class="badge badge-passed">&#10003; Checked</span>
                         {% else %}
                             <span class="badge badge-pending">Pending review</span>
                         {% endif %}
@@ -196,13 +234,13 @@
                             <div class="v">{{ run.grand_total_reconciled }} / {{ run.grand_total_outstanding }}</div>
                         </div>
                         <div class="activity-box-item">
-                            <div class="k">Passed</div>
+                            <div class="k">Checked</div>
                             <div class="v">
                                 <form method="post" action="{% url 'reconcile:toggle_passed' run.id %}">
                                     {% csrf_token %}
                                     <input type="hidden" name="next" value="{{ request.get_full_path }}#mine">
                                     {% if run.passed %}
-                                        <button type="submit" class="btn btn-sm btn-toggle-on">&#10003; Passed &mdash; unmark</button>
+                                        <button type="submit" class="btn btn-sm btn-toggle-on">&#10003; Checked &mdash; unmark</button>
                                     {% else %}
                                         <button type="submit" class="btn btn-sm btn-secondary">Mark checked</button>
                                     {% endif %}
@@ -229,6 +267,97 @@
         </div>
     </div>
 </div></div>
+
+<div class="modal-overlay" id="issue-modal-overlay" onclick="if(event.target===this) closeIssueModal()">
+    <div class="modal-box">
+        <button class="modal-close" onclick="closeIssueModal()" aria-label="Close">&times;</button>
+        <div class="modal-head-row">
+            <div>
+                <h3>Reconciliation issue note</h3>
+                <p class="muted" id="issue-modal-sub"></p>
+            </div>
+        </div>
+        <p class="muted" id="issue-readonly-notice" style="display:none;">Read-only &mdash; only the person who ran this reconciliation (or an admin) can edit this note.</p>
+        <form method="post" id="issue-modal-form" action="">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.get_full_path }}#shared">
+            <div class="field">
+                <label for="issue-description">Description</label>
+                <textarea id="issue-description" name="description" rows="4" placeholder="What went wrong, or what's unusual about this day's reconciliation?"></textarea>
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; font-weight:600; cursor:pointer;">
+                <input type="checkbox" id="issue-resolved" name="resolved" style="width:auto; margin:0;">
+                Resolved
+            </label>
+            <div class="field" id="issue-notify-field" style="margin-top:14px;">
+                <label for="issue-notify-emails">Notify others &mdash; To (comma-separated)</label>
+                <input type="text" id="issue-notify-emails" name="notify_emails" placeholder="someone@example.com, lead@example.com">
+                <label for="issue-notify-cc" style="margin-top:10px; display:block;">Cc (comma-separated, optional)</label>
+                <input type="text" id="issue-notify-cc" name="notify_cc" placeholder="cc-person@example.com">
+            </div>
+            <p class="muted" id="issue-notified-info" style="margin-top:8px;"></p>
+            <div id="issue-modal-actions" style="margin-top:16px; display:flex; gap:10px;">
+                <button type="submit" name="do" value="save" class="btn btn-secondary">Save note</button>
+                <button type="submit" name="do" value="notify" class="btn">&#128276; Save &amp; notify</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openIssueModal(btn) {
+    var runId = btn.getAttribute('data-run-id');
+    var canEdit = btn.getAttribute('data-can-edit') === '1';
+    var form = document.getElementById('issue-modal-form');
+    form.action = '{% url "reconcile:update_issue" 0 %}'.replace('0', runId);
+
+    var descriptionEl = document.getElementById('issue-description');
+    var resolvedEl = document.getElementById('issue-resolved');
+    var toEl = document.getElementById('issue-notify-emails');
+    var ccEl = document.getElementById('issue-notify-cc');
+
+    descriptionEl.value = btn.getAttribute('data-description') || '';
+    resolvedEl.checked = btn.getAttribute('data-resolved') === '1';
+    toEl.value = '';
+    ccEl.value = '';
+
+    descriptionEl.readOnly = !canEdit;
+    resolvedEl.disabled = !canEdit;
+    document.getElementById('issue-notify-field').style.display = canEdit ? '' : 'none';
+    document.getElementById('issue-modal-actions').style.display = canEdit ? '' : 'none';
+    document.getElementById('issue-readonly-notice').style.display = canEdit ? 'none' : '';
+
+    var sub = 'Run #' + runId;
+    var updatedBy = btn.getAttribute('data-updated-by');
+    var updatedAt = btn.getAttribute('data-updated-at');
+    if (updatedBy && updatedAt) {
+        sub += ' · last updated by ' + updatedBy + ' on ' + updatedAt;
+    }
+    document.getElementById('issue-modal-sub').textContent = sub;
+
+    var notifiedTo = btn.getAttribute('data-notified-to');
+    var notifiedCc = btn.getAttribute('data-notified-cc');
+    var notifiedAt = btn.getAttribute('data-notified-at');
+    var notifiedBy = btn.getAttribute('data-notified-by');
+    var infoEl = document.getElementById('issue-notified-info');
+    if (notifiedTo && notifiedAt) {
+        var text = '🔔 Notified ' + notifiedTo;
+        if (notifiedCc) { text += ' (cc: ' + notifiedCc + ')'; }
+        text += ' on ' + notifiedAt + ' by ' + notifiedBy;
+        infoEl.textContent = text;
+    } else {
+        infoEl.textContent = '';
+    }
+
+    document.getElementById('issue-modal-overlay').classList.add('open');
+}
+function closeIssueModal() {
+    document.getElementById('issue-modal-overlay').classList.remove('open');
+}
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeIssueModal(); }
+});
+</script>
 
 <script>
 document.getElementById('reconcile-form').addEventListener('submit', function () {

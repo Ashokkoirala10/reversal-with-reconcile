@@ -426,6 +426,13 @@ def _extra_page_context(request):
     Mail signature). Each tab's own view fills in its own form/result on
     top of this."""
     context = {"form": BankStatementUploadForm(user=request.user), "verification_form": VerificationFormatUploadForm()}
+    # "Mail signature" tab — who an outgoing email (verification "Send
+    # mail" or a reconcile issue-note "notify others" alert) is signed as
+    # (core.models.MailSignature). Per-user, not admin-only: everyone
+    # manages their own list and picks their own active one — see
+    # core.services.resolve_mail_signature().
+    context["mail_signature_form"] = MailSignatureForm()
+    context["mail_signatures"] = MailSignature.objects.filter(user=request.user)
     if is_admin(request.user):
         # "Extra" page's second tab — add-bank-account feature for Admin
         # (is_staff) users. Full CRUD on bank accounts (edit/delete) stays
@@ -439,12 +446,6 @@ def _extra_page_context(request):
         # "Verification format" tab's per-bank "Send mail" buttons.
         context["bank_contact_form"] = VerificationBankContactForm()
         context["bank_contacts"] = VerificationBankContact.objects.order_by("bank_name")
-        # "Mail signature" tab — who those "Send mail" emails are signed
-        # as (core.models.MailSignature). Editable in-app (unlike the
-        # legacy MAIL_SIGNATURE_* .env defaults it falls back to) so
-        # staff turnover doesn't need a code change.
-        context["mail_signature_form"] = MailSignatureForm()
-        context["mail_signatures"] = MailSignature.objects.all()
     if is_superadmin(request.user):
         # "Make user" tab — Admin (is_superuser) only, unlike the rest of
         # this page's tabs which just need is_staff, since it can grant
@@ -525,16 +526,19 @@ def update_verification_bank_contact_view(request, contact_id):
 
 
 @login_required
-@user_passes_test(is_admin, login_url="core:upload")
 @require_POST
 def add_mail_signature_view(request):
-    """Add a new core.models.MailSignature row from the "Extra" page's
-    "Mail signature" tab — used to sign every "Send mail" verification
-    email going forward (see resolve_mail_signature() in
-    core/services.py). Restricted to Admin (is_staff) users."""
+    """Add a new core.models.MailSignature row, owned by the logged-in
+    user, from the "Extra" page's "Mail signature" tab — used to sign
+    that same user's own outgoing emails going forward (see
+    resolve_mail_signature() in core/services.py). Any logged-in user can
+    add their own; there's no admin gate here since each person only ever
+    manages their own signatures."""
     form = MailSignatureForm(request.POST)
     if form.is_valid():
-        signature = form.save()
+        signature = form.save(commit=False)
+        signature.user = request.user
+        signature.save()
         messages.success(request, f"Mail signature '{signature.name or signature.title}' added.")
         log_action(request, f"Added mail signature '{signature.name or signature.title}'")
     else:
@@ -546,13 +550,18 @@ def add_mail_signature_view(request):
 
 
 @login_required
-@user_passes_test(is_admin, login_url="core:upload")
 @require_POST
 def update_mail_signature_view(request, signature_id):
     """Edit an existing mail signature — the Edit button next to each row
     on the "Mail signature" tab's list. Untick "Active" here to retire a
-    signature (e.g. someone leaving) without deleting its history."""
+    signature (e.g. no longer wanted) without deleting its history. Only
+    the signature's own owner (or an admin, e.g. cleaning up after
+    someone's left) can edit it — everyone else's is entirely their own,
+    there's no shared/global one anymore."""
     signature = get_object_or_404(MailSignature, id=signature_id)
+    if signature.user_id != request.user.id and not is_admin(request.user):
+        messages.error(request, "You can only edit your own mail signatures.")
+        return redirect(f"{reverse('core:bank_statement_upload')}?tab=mailsignature")
     form = MailSignatureForm(request.POST, instance=signature)
     if form.is_valid():
         signature = form.save()
@@ -748,7 +757,7 @@ def verification_send_mail_view(request):
         return JsonResponse({"success": False, "message": f"Could not read the attachment: {exc}"}, status=400)
 
     fallback_sender_name = request.user.get_full_name() or request.user.username
-    subject, html_body, text_body = build_verification_email(bank_name, rows, fallback_sender_name)
+    subject, html_body, text_body = build_verification_email(bank_name, rows, fallback_sender_name, sender=request.user)
 
     email = EmailMultiAlternatives(subject=subject, body=text_body, to=to_list, cc=cc_list or None)
     email.attach_alternative(html_body, "text/html")

@@ -391,8 +391,9 @@
     {% if mail_signature_form %}
     <div id="extra-tab-mailsignature" style="display:none;">
         <div class="info-box">
-             When more than one row is Active, the most recently updated one is used —
-            untick Active of all others.
+            This is your own signature — used to sign every verification "Send mail" and reconcile
+            "notify others" email <strong>you</strong> send, not anyone else's. If you have more than one
+            Active row, the most recently updated one is used — untick Active on the others.
         </div>
 
         <form method="post" action="{% url 'core:add_mail_signature' %}" id="add-mail-signature-form">
@@ -445,7 +446,7 @@
         </form>
 
         {% if mail_signatures %}
-        <h3 style="margin-top:22px; font-size:15px;">Configured signatures</h3>
+        <h3 style="margin-top:22px; font-size:15px;">Your signatures</h3>
         <div class="table-scroll">
             <table>
                 <thead>

@@ -49,9 +49,20 @@
 </script>
 <main class="{% block main_class %}{% endblock %}">
     {% if messages %}
-        <ul class="messages">
-            {% for message in messages %}<li class="{{ message.tags }}">{{ message }}</li>{% endfor %}
+        <ul class="messages" id="page-messages">
+            {% for message in messages %}<li class="{{ message.tags }}" onclick="this.remove()">{{ message }}</li>{% endfor %}
         </ul>
+        <script>
+        (function () {
+            var items = document.querySelectorAll('#page-messages li');
+            items.forEach(function (el) {
+                setTimeout(function () {
+                    el.classList.add('fade-out');
+                    setTimeout(function () { el.remove(); }, 300);
+                }, 3500);
+            });
+        })();
+        </script>
     {% endif %}
     {% block content %}{% endblock %}
 </main>
