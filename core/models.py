@@ -461,6 +461,117 @@ class MailSignature(models.Model):
         return f"{self.name or self.title} ({'active' if self.is_active else 'inactive'})"
 
 
+class UserAccess(models.Model):
+    """Per-user feature toggles for the app's role-based access control —
+    one row per user, one boolean per gated feature area. A superuser
+    always has full access regardless of these flags (see
+    core.permissions.has_feature); this model only matters for everyone
+    else. Mail signatures (core.models.MailSignature) are deliberately
+    NOT gated here — every logged-in user manages their own regardless of
+    role, so there's no corresponding flag."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="access",
+    )
+    can_reversal = models.BooleanField(default=False, help_text="Generate reversal files.")
+    can_reconcile = models.BooleanField(default=False, help_text="Run reconciliations.")
+    can_verification_format = models.BooleanField(default=False, help_text="Use the Verification format tool.")
+    can_check_statements = models.BooleanField(default=False, help_text="Check a generated file against a bank statement.")
+    can_audit_log = models.BooleanField(default=False, help_text="View the audit log.")
+    can_bank_contacts = models.BooleanField(default=False, help_text="Add/update verification bank contacts.")
+    can_issuer_bank_accounts = models.BooleanField(default=False, help_text="Add issuer bank accounts.")
+    can_make_users = models.BooleanField(default=False, help_text="Create/update/delete user logins.")
+    can_scheduler = models.BooleanField(
+        default=False, help_text="Manage the dispute/timeout alert and daily report scheduler."
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Access ({self.user.username})"
+
+
+class ScheduledReportRecipient(models.Model):
+    """Who the background scheduler (core.scheduler) emails — one row per
+    recipient group, either for the every-minute dispute/timeout alert or
+    the 09:00 daily transaction report. Multiple active rows for the same
+    report_type are all merged into one send (their to/cc lists combined),
+    same idea as core.models.VerificationBankContact's to_emails/cc_emails
+    shape, just not keyed by bank."""
+
+    REPORT_DISPUTE_ALERT = "dispute_alert"
+    REPORT_DAILY_REPORT = "daily_report"
+    REPORT_TYPE_CHOICES = [
+        (REPORT_DISPUTE_ALERT, "Dispute/timeout alert (every minute)"),
+        (REPORT_DAILY_REPORT, "Daily transaction report (09:00)"),
+    ]
+
+    report_type = models.CharField(max_length=20, choices=REPORT_TYPE_CHOICES)
+    label = models.CharField(
+        max_length=100, blank=True, default="", help_text="Optional — e.g. 'Ops team', just for your own reference."
+    )
+    to_emails = models.CharField(max_length=500, help_text="Comma-separated.")
+    cc_emails = models.CharField(max_length=500, blank=True, default="", help_text="Comma-separated, optional.")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["report_type", "label"]
+
+    def __str__(self):
+        return f"{self.get_report_type_display()} — {self.label or self.to_emails}"
+
+
+class SchedulerJobState(models.Model):
+    """One row per background job (core.scheduler) — whether it's turned
+    on, and its last-run outcome, so the Explore page's Start/Stop toggle
+    and status line don't need to talk to the scheduler process directly.
+    The scheduler itself always ticks (added once at process start); each
+    job function checks its own row's is_enabled and returns immediately
+    if off, which is what actually makes Start/Stop work regardless of
+    how many worker processes are serving the app."""
+
+    JOB_DISPUTE_ALERT = ScheduledReportRecipient.REPORT_DISPUTE_ALERT
+    JOB_DAILY_REPORT = ScheduledReportRecipient.REPORT_DAILY_REPORT
+    JOB_CHOICES = ScheduledReportRecipient.REPORT_TYPE_CHOICES
+
+    job_key = models.CharField(max_length=20, choices=JOB_CHOICES, unique=True)
+    is_enabled = models.BooleanField(default=False)
+    last_checked_at = models.DateTimeField(
+        null=True, blank=True, help_text="Dispute alert only — rolling window cursor for what's already been checked."
+    )
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    last_result = models.CharField(max_length=255, blank=True, default="")
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.get_job_key_display()} ({'on' if self.is_enabled else 'off'})"
+
+
+class AlertedTimeoutTransaction(models.Model):
+    """Dedup ledger for core.scheduler.check_dispute_timeouts() — one row
+    per transaction (keyed by Network Reference Id, the base36-encoded
+    transaction id switch_db.py derives — see
+    switch_db._network_reference_id()) that's already gone out in a
+    dispute/timeout alert email. Each check's query window overlaps the
+    previous one on purpose (to catch a transaction that only flips to
+    TIMEOUT status a little after it was created), so this table — not
+    the window — is what guarantees the same transaction is never
+    emailed twice."""
+
+    network_reference_id = models.CharField(max_length=20, unique=True)
+    alerted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-alerted_at"]
+
+    def __str__(self):
+        return self.network_reference_id
+
+
 def _clear_bank_account_cache(**kwargs):
     # Lazy import: services.py has no top-level dependency on models.py, and
     # this keeps it that way — only reached once Django has fully loaded.

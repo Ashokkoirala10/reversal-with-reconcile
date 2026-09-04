@@ -9,7 +9,7 @@
 </head>
 <body>
 <header>
-    <a href="{% url 'core:upload' %}" class="brand">
+    <a href="{% url 'core:dashboard' %}" class="brand">
         <img src="{% static 'core/img/sct-logo.png' %}" alt="SCT">
     </a>
     {% if user.is_authenticated %}
@@ -17,16 +17,20 @@
     {% endif %}
     <nav id="main-nav">
         {% if user.is_authenticated %}
-            <a href="{% url 'core:upload' %}" class="{% if request.resolver_match.url_name == 'upload' %}active{% endif %}">Reversal</a>
+            {% if feat_can_reversal %}
+                <a href="{% url 'core:upload' %}" class="{% if request.resolver_match.url_name == 'upload' %}active{% endif %}">Reversal</a>
+            {% endif %}
             <a href="{% url 'core:bank_statement_upload' %}" class="{% if request.resolver_match.url_name == 'bank_statement_upload' %}active{% endif %}">Explore</a>
-            <a href="{% url 'reconcile:reconcile' %}" class="{% if request.resolver_match.app_name == 'reconcile' and request.resolver_match.url_name == 'reconcile' %}active{% endif %}">Reconcile</a>
+            {% if feat_can_reconcile %}
+                <a href="{% url 'reconcile:reconcile' %}" class="{% if request.resolver_match.app_name == 'reconcile' and request.resolver_match.url_name == 'reconcile' %}active{% endif %}">Reconcile</a>
+            {% endif %}
             <a href="{% url 'core:dashboard' %}" class="{% if request.resolver_match.url_name == 'dashboard' and request.resolver_match.app_name == 'core' %}active{% endif %}">Dashboard</a>
-            {% if user.is_staff %}
+            {% if feat_can_audit_log %}
                 <a href="{% url 'core:audit_log' %}" class="{% if request.resolver_match.url_name == 'audit_log' and request.resolver_match.app_name == 'core' %}active{% endif %}">Audit Log</a>
             {% endif %}
             <span class="nav-divider"></span>
             <span class="user-badge">
-                <span class="role-pill">{% if user.is_staff %}Admin{% else %}Operator{% endif %}</span>
+                <span class="role-pill">{% if user.is_superuser %}Superuser{% elif user.is_staff %}Admin{% else %}Operator{% endif %}</span>
             </span>
             <form method="post" action="{% url 'core:logout' %}">
                 {% csrf_token %}

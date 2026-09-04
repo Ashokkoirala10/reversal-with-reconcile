@@ -1,26 +1,35 @@
 {% extends "core/base.html" %}
+{% load core_extras %}
 {% block content %}
 <div class="card extra-page-card">
     <h2>Extra</h2>
 
     <div class="extra-tabs">
-        <button type="button" class="extra-tab-btn active" data-extra-tab="check" onclick="showExtraTab('check')">Check bank statement</button>
+        {% if feat_can_check_statements %}
+        <button type="button" class="extra-tab-btn" data-extra-tab="check" onclick="showExtraTab('check')">Check bank statement</button>
+        {% endif %}
         {% if bank_form %}
         <button type="button" class="extra-tab-btn" data-extra-tab="addbank" onclick="showExtraTab('addbank')">Add bank account</button>
         {% endif %}
         {% if create_user_form %}
         <button type="button" class="extra-tab-btn" data-extra-tab="createuser" onclick="showExtraTab('createuser')">Make user</button>
         {% endif %}
+        {% if verification_form %}
         <button type="button" class="extra-tab-btn" data-extra-tab="verify" onclick="showExtraTab('verify')">Verification format</button>
+        {% endif %}
         {% if bank_contact_form %}
         <button type="button" class="extra-tab-btn" data-extra-tab="bankcontacts" onclick="showExtraTab('bankcontacts')">Bank contacts</button>
+        {% endif %}
+        {% if dispute_recipient_form %}
+        <button type="button" class="extra-tab-btn" data-extra-tab="scheduler" onclick="showExtraTab('scheduler')">Scheduler</button>
         {% endif %}
         {% if mail_signature_form %}
         <button type="button" class="extra-tab-btn" data-extra-tab="mailsignature" onclick="showExtraTab('mailsignature')">Mail signature</button>
         {% endif %}
     </div>
 
-    <div id="extra-tab-check">
+    {% if feat_can_check_statements %}
+    <div id="extra-tab-check" style="display:none;">
     <div class="info-box">
         You can upload a <strong>Global IME Bank</strong> statement (up to 3 files), a <strong>Prabhu Bank</strong> statement
         (up to 4 files, e.g. several daily exports), or <strong>both at once</strong>
@@ -57,6 +66,7 @@
 
     </p>
     </div>
+    {% endif %}
 
     {% if bank_form %}
     <div id="extra-tab-addbank" style="display:none;">
@@ -125,10 +135,6 @@
 
     {% if create_user_form %}
     <div id="extra-tab-createuser" style="display:none;">
-        <div class="info-box">
-            Create a new login. Skips the group/permission editors from the Django admin — just the essentials.
-        </div>
-
         <form method="post" action="{% url 'core:create_user' %}" id="create-user-form">
             {% csrf_token %}
             <div class="field-row">
@@ -150,9 +156,23 @@
             </div>
             <div class="checkbox-row">
                 <label class="checkbox-field" for="id_is_active">{{ create_user_form.is_active }} {{ create_user_form.is_active.label }}</label>
+                {% if request.user.is_superuser %}
                 <label class="checkbox-field" for="id_is_staff">{{ create_user_form.is_staff }} {{ create_user_form.is_staff.label }}</label>
                 <label class="checkbox-field" for="id_is_superuser">{{ create_user_form.is_superuser }} {{ create_user_form.is_superuser.label }}</label>
+                {% endif %}
             </div>
+            {% if request.user.is_superuser %}
+            <div class="field">
+                <label>Feature access (ignored if Admin is ticked — an Admin always has everything)</label>
+                <div class="checkbox-row">
+                    {% for feature in create_user_form.feature_fields %}
+                    <label class="checkbox-field" for="{{ feature.id_for_label }}">{{ feature }} {{ feature.label }}</label>
+                    {% endfor %}
+                </div>
+            </div>
+            {% else %}
+            <p class="muted" style="font-size:12.5px;">Only a superuser can grant Staff/Admin status or feature access — this account will start with none.</p>
+            {% endif %}
             <button type="submit" class="btn" id="create-user-submit-btn" style="width:100%;">Create user</button>
         </form>
 
@@ -167,6 +187,7 @@
                         <th>Active</th>
                         <th>Staff</th>
                         <th>Admin</th>
+                        <th>Access</th>
                         <th>Joined</th>
                         <th></th>
                     </tr>
@@ -179,6 +200,7 @@
                             <td>{% if u.is_active %}Yes{% else %}No{% endif %}</td>
                             <td>{% if u.is_staff %}Yes{% else %}—{% endif %}</td>
                             <td>{% if u.is_superuser %}Yes{% else %}—{% endif %}</td>
+                            <td>{{ u.access_summary }}</td>
                             <td>{{ u.date_joined|date:"Y-m-d" }}</td>
                             <td style="white-space:nowrap;">
                                 <div style="display:flex; gap:6px;">
@@ -198,6 +220,18 @@
                 </tbody>
             </table>
         </div>
+
+        {% if users_page.paginator.num_pages > 1 %}
+        <div class="pagination">
+            {% if users_page.has_previous %}
+                <a href="?tab=createuser&userpage={{ users_page.previous_page_number }}#extra-tab-createuser">&larr; Previous</a>
+            {% endif %}
+            <span class="muted">Page {{ users_page.number }} of {{ users_page.paginator.num_pages }}</span>
+            {% if users_page.has_next %}
+                <a href="?tab=createuser&userpage={{ users_page.next_page_number }}#extra-tab-createuser">Next &rarr;</a>
+            {% endif %}
+        </div>
+        {% endif %}
 
         {% for u in all_users %}
         <div id="edit-user-modal-{{ u.id }}" class="download-modal-overlay" style="display:none;">
@@ -221,6 +255,7 @@
                         <input type="checkbox" name="is_active" id="edit-active-{{ u.id }}" {% if u.is_active %}checked{% endif %}>
                         <label for="edit-active-{{ u.id }}" style="margin:0;">Active</label>
                     </div>
+                    {% if request.user.is_superuser %}
                     <div class="field" style="display:flex; align-items:center; gap:8px;">
                         <input type="checkbox" name="is_staff" id="edit-staff-{{ u.id }}" {% if u.is_staff %}checked{% endif %}>
                         <label for="edit-staff-{{ u.id }}" style="margin:0;">Staff</label>
@@ -229,6 +264,20 @@
                         <input type="checkbox" name="is_superuser" id="edit-admin-{{ u.id }}" {% if u.is_superuser %}checked{% endif %}>
                         <label for="edit-admin-{{ u.id }}" style="margin:0;">Admin</label>
                     </div>
+                    <div class="field">
+                        <label style="margin-bottom:4px;">Feature access (ignored if Admin is ticked)</label>
+                        <div class="checkbox-row">
+                            {% for name, label in features %}
+                            <label class="checkbox-field" for="edit-{{ name }}-{{ u.id }}">
+                                <input type="checkbox" name="{{ name }}" id="edit-{{ name }}-{{ u.id }}" {% if u.user_access|attr:name %}checked{% endif %}>
+                                {{ label }}
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% else %}
+                    <p class="muted" style="font-size:12.5px;">Only a superuser can change Staff/Admin status or feature access.</p>
+                    {% endif %}
                     <button type="submit" class="btn" style="width:100%;">Save changes</button>
                     <button type="button" class="btn btn-secondary" style="width:100%; margin-top:8px;" onclick="closeEditUserModal({{ u.id }})">Cancel</button>
                 </form>
@@ -239,6 +288,7 @@
     </div>
     {% endif %}
 
+    {% if verification_form %}
     <div id="extra-tab-verify" style="display:none;">
         <div class="verify-header-row">
             <div class="info-box" style="flex:1 1 220px; margin-bottom:0;">
@@ -284,6 +334,7 @@
         </div>
         {% endif %}
     </div>
+    {% endif %}
 
     {% if bank_contact_form %}
     <div id="extra-tab-bankcontacts" style="display:none;">
@@ -385,6 +436,212 @@
         </div>
         {% endfor %}
         {% endif %}
+    </div>
+    {% endif %}
+
+    {% if dispute_recipient_form %}
+    <div id="extra-tab-scheduler" style="display:none;">
+        <div class="info-box">
+            Two background jobs: a <strong>dispute/timeout alert</strong> and a <strong>daily transaction report</strong>
+            sent at 09:00. Each has its own recipient list below.
+        </div>
+
+        <h3 style="font-size:15px;">Dispute / timeout alert</h3>
+        <div class="scheduler-status-row">
+            <span class="badge {% if dispute_job_state.is_enabled %}badge-passed{% else %}badge-pending{% endif %}">
+                {% if dispute_job_state.is_enabled %}&#9679; Running{% else %}&#9679; Stopped{% endif %}
+            </span>
+            <span class="muted" style="font-size:12.5px;">
+                {% if dispute_job_state.last_run_at %}Last checked {{ dispute_job_state.last_run_at|date:"Y-m-d H:i" }} — {{ dispute_job_state.last_result|default:"—" }}{% else %}Never run yet{% endif %}
+            </span>
+            <form method="post" action="{% url 'core:scheduler_toggle' 'dispute_alert' %}" style="margin:0;">
+                {% csrf_token %}
+                {% if dispute_job_state.is_enabled %}
+                    <button type="submit" name="action" value="stop" class="btn btn-sm btn-danger">Stop</button>
+                {% else %}
+                    <button type="submit" name="action" value="start" class="btn btn-sm">Start</button>
+                {% endif %}
+            </form>
+        </div>
+
+        <form method="post" action="{% url 'core:add_scheduled_recipient' 'dispute_alert' %}" id="add-dispute-recipient-form" style="margin-top:14px;">
+            {% csrf_token %}
+            <div class="field-row">
+                <div class="field">
+                    <label for="id_label">{{ dispute_recipient_form.label.label }}</label>
+                    {{ dispute_recipient_form.label }}
+                </div>
+                <div class="field">
+                    <label for="id_to_emails">{{ dispute_recipient_form.to_emails.label }}</label>
+                    {{ dispute_recipient_form.to_emails }}
+                    {% if dispute_recipient_form.to_emails.errors %}<div class="error-box">{{ dispute_recipient_form.to_emails.errors }}</div>{% endif %}
+                </div>
+            </div>
+            <div class="field">
+                <label for="id_cc_emails">{{ dispute_recipient_form.cc_emails.label }}</label>
+                {{ dispute_recipient_form.cc_emails }}
+            </div>
+            <div class="checkbox-row">
+                <label class="checkbox-field" for="id_is_active">{{ dispute_recipient_form.is_active }} {{ dispute_recipient_form.is_active.label }}</label>
+            </div>
+            <button type="submit" class="btn" style="width:100%;">Add recipient</button>
+        </form>
+
+        {% if dispute_recipients %}
+        <div class="table-scroll" style="margin-top:14px;">
+            <table>
+                <thead>
+                    <tr><th>Label</th><th>To</th><th>Cc</th><th>Active</th><th></th></tr>
+                </thead>
+                <tbody>
+                    {% for r in dispute_recipients %}
+                    <tr>
+                        <td>{{ r.label|default:"—" }}</td>
+                        <td>{{ r.to_emails }}</td>
+                        <td>{{ r.cc_emails|default:"—" }}</td>
+                        <td>{% if r.is_active %}Yes{% else %}No{% endif %}</td>
+                        <td style="white-space:nowrap;">
+                            <div style="display:flex; gap:6px;">
+                                <button type="button" class="btn btn-sm btn-secondary" onclick="openEditSchedRecipientModal({{ r.id }})">Edit</button>
+                                <form method="post" action="{% url 'core:delete_scheduled_recipient' r.id %}" onsubmit="return confirm('Remove this recipient?');" style="margin:0;">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        <h3 style="font-size:15px; margin-top:26px;">Daily transaction report (09:00)</h3>
+        <div class="scheduler-status-row">
+            <span class="badge {% if daily_job_state.is_enabled %}badge-passed{% else %}badge-pending{% endif %}">
+                {% if daily_job_state.is_enabled %}&#9679; Running{% else %}&#9679; Stopped{% endif %}
+            </span>
+            <span class="muted" style="font-size:12.5px;">
+                {% if daily_job_state.last_run_at %}Last sent {{ daily_job_state.last_run_at|date:"Y-m-d H:i" }} — {{ daily_job_state.last_result|default:"—" }}{% else %}Never run yet{% endif %}
+            </span>
+            <form method="post" action="{% url 'core:scheduler_toggle' 'daily_report' %}" style="margin:0;">
+                {% csrf_token %}
+                {% if daily_job_state.is_enabled %}
+                    <button type="submit" name="action" value="stop" class="btn btn-sm btn-danger">Stop</button>
+                {% else %}
+                    <button type="submit" name="action" value="start" class="btn btn-sm">Start</button>
+                {% endif %}
+            </form>
+        </div>
+
+        <form method="post" action="{% url 'core:add_scheduled_recipient' 'daily_report' %}" id="add-daily-recipient-form" style="margin-top:14px;">
+            {% csrf_token %}
+            <div class="field-row">
+                <div class="field">
+                    <label for="id_label">{{ daily_recipient_form.label.label }}</label>
+                    {{ daily_recipient_form.label }}
+                </div>
+                <div class="field">
+                    <label for="id_to_emails">{{ daily_recipient_form.to_emails.label }}</label>
+                    {{ daily_recipient_form.to_emails }}
+                    {% if daily_recipient_form.to_emails.errors %}<div class="error-box">{{ daily_recipient_form.to_emails.errors }}</div>{% endif %}
+                </div>
+            </div>
+            <div class="field">
+                <label for="id_cc_emails">{{ daily_recipient_form.cc_emails.label }}</label>
+                {{ daily_recipient_form.cc_emails }}
+            </div>
+            <div class="checkbox-row">
+                <label class="checkbox-field" for="id_is_active">{{ daily_recipient_form.is_active }} {{ daily_recipient_form.is_active.label }}</label>
+            </div>
+            <button type="submit" class="btn" style="width:100%;">Add recipient</button>
+        </form>
+
+        {% if daily_recipients %}
+        <div class="table-scroll" style="margin-top:14px;">
+            <table>
+                <thead>
+                    <tr><th>Label</th><th>To</th><th>Cc</th><th>Active</th><th></th></tr>
+                </thead>
+                <tbody>
+                    {% for r in daily_recipients %}
+                    <tr>
+                        <td>{{ r.label|default:"—" }}</td>
+                        <td>{{ r.to_emails }}</td>
+                        <td>{{ r.cc_emails|default:"—" }}</td>
+                        <td>{% if r.is_active %}Yes{% else %}No{% endif %}</td>
+                        <td style="white-space:nowrap;">
+                            <div style="display:flex; gap:6px;">
+                                <button type="button" class="btn btn-sm btn-secondary" onclick="openEditSchedRecipientModal({{ r.id }})">Edit</button>
+                                <form method="post" action="{% url 'core:delete_scheduled_recipient' r.id %}" onsubmit="return confirm('Remove this recipient?');" style="margin:0;">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        {% for r in dispute_recipients %}
+        <div id="edit-sched-recipient-modal-{{ r.id }}" class="download-modal-overlay" style="display:none;">
+            <div class="download-modal" style="text-align:left;">
+                <h3>Edit recipient</h3>
+                <form method="post" action="{% url 'core:update_scheduled_recipient' r.id %}">
+                    {% csrf_token %}
+                    <div class="field">
+                        <label for="edit-sched-label-{{ r.id }}">Label</label>
+                        <input type="text" name="label" id="edit-sched-label-{{ r.id }}" value="{{ r.label }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-sched-to-{{ r.id }}">To email(s)</label>
+                        <input type="text" class="email-raw-input" name="to_emails" id="edit-sched-to-{{ r.id }}" value="{{ r.to_emails }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-sched-cc-{{ r.id }}">Cc email(s)</label>
+                        <input type="text" class="email-raw-input" name="cc_emails" id="edit-sched-cc-{{ r.id }}" value="{{ r.cc_emails }}">
+                    </div>
+                    <div class="field" style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" name="is_active" id="edit-sched-active-{{ r.id }}" {% if r.is_active %}checked{% endif %}>
+                        <label for="edit-sched-active-{{ r.id }}" style="margin:0;">Active</label>
+                    </div>
+                    <button type="submit" class="btn" style="width:100%;">Save changes</button>
+                    <button type="button" class="btn btn-secondary" style="width:100%; margin-top:8px;" onclick="closeEditSchedRecipientModal({{ r.id }})">Cancel</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+        {% for r in daily_recipients %}
+        <div id="edit-sched-recipient-modal-{{ r.id }}" class="download-modal-overlay" style="display:none;">
+            <div class="download-modal" style="text-align:left;">
+                <h3>Edit recipient</h3>
+                <form method="post" action="{% url 'core:update_scheduled_recipient' r.id %}">
+                    {% csrf_token %}
+                    <div class="field">
+                        <label for="edit-sched-label-{{ r.id }}">Label</label>
+                        <input type="text" name="label" id="edit-sched-label-{{ r.id }}" value="{{ r.label }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-sched-to-{{ r.id }}">To email(s)</label>
+                        <input type="text" class="email-raw-input" name="to_emails" id="edit-sched-to-{{ r.id }}" value="{{ r.to_emails }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-sched-cc-{{ r.id }}">Cc email(s)</label>
+                        <input type="text" class="email-raw-input" name="cc_emails" id="edit-sched-cc-{{ r.id }}" value="{{ r.cc_emails }}">
+                    </div>
+                    <div class="field" style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" name="is_active" id="edit-sched-active-{{ r.id }}" {% if r.is_active %}checked{% endif %}>
+                        <label for="edit-sched-active-{{ r.id }}" style="margin:0;">Active</label>
+                    </div>
+                    <button type="submit" class="btn" style="width:100%;">Save changes</button>
+                    <button type="button" class="btn btn-secondary" style="width:100%; margin-top:8px;" onclick="closeEditSchedRecipientModal({{ r.id }})">Cancel</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
     </div>
     {% endif %}
 
@@ -566,6 +823,7 @@
     gap: 0 16px;
 }
 .checkbox-row { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 20px; }
+.scheduler-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
 .checkbox-field {
     display: inline-flex; align-items: center; gap: 8px;
     font-weight: 600; font-size: 14px; color: var(--text); cursor: pointer; margin: 0;
@@ -672,6 +930,26 @@ if (createUserForm) {
     });
 }
 
+// Bfcache restore (e.g. browser Back after a redirect) brings the page
+// back exactly as it was when we navigated away — including a submit
+// button left disabled/spinning by the handlers above. Without this, a
+// second click after going back does nothing at all. Scoped to this
+// page's own submit buttons only.
+window.addEventListener('pageshow', function (e) {
+    if (!e.persisted) { return; }
+    [
+        ['statement-submit-btn', 'Check statement'],
+        ['verify-submit-btn', 'Convert'],
+        ['create-user-submit-btn', 'Create user']
+    ].forEach(function (pair) {
+        var btn = document.getElementById(pair[0]);
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = pair[1];
+        }
+    });
+});
+
 function showExtraTab(tab) {
     var panels = {
         check: document.getElementById('extra-tab-check'),
@@ -679,6 +957,7 @@ function showExtraTab(tab) {
         createuser: document.getElementById('extra-tab-createuser'),
         verify: document.getElementById('extra-tab-verify'),
         bankcontacts: document.getElementById('extra-tab-bankcontacts'),
+        scheduler: document.getElementById('extra-tab-scheduler'),
         mailsignature: document.getElementById('extra-tab-mailsignature'),
     };
     Object.keys(panels).forEach(function (key) {
@@ -717,6 +996,16 @@ function openEditBankContactModal(id) {
 
 function closeEditBankContactModal(id) {
     var modal = document.getElementById('edit-bank-contact-modal-' + id);
+    if (modal) { modal.style.display = 'none'; }
+}
+
+function openEditSchedRecipientModal(id) {
+    var modal = document.getElementById('edit-sched-recipient-modal-' + id);
+    if (modal) { modal.style.display = 'flex'; }
+}
+
+function closeEditSchedRecipientModal(id) {
+    var modal = document.getElementById('edit-sched-recipient-modal-' + id);
     if (modal) { modal.style.display = 'none'; }
 }
 

@@ -3,7 +3,15 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 
-from .models import BankAccount, MailSignature, ProcessingLog, VerificationBankContact
+from .models import (
+    BankAccount,
+    MailSignature,
+    ProcessingLog,
+    ScheduledReportRecipient,
+    UserAccess,
+    VerificationBankContact,
+)
+from .permissions import FEATURES, get_user_access
 
 
 class UploadForm(forms.Form):
@@ -271,6 +279,52 @@ class VerificationBankContactForm(forms.ModelForm):
         return ", ".join(addresses)
 
 
+class ScheduledReportRecipientForm(forms.ModelForm):
+    """Add/edit one recipient row for a core.scheduler background job
+    (core.models.ScheduledReportRecipient) — the "Scheduler" tab's
+    dispute/timeout alert and daily report recipient lists both use this
+    same form; `report_type` is set server-side by the view (which of the
+    two "Add" buttons was used), same as MailSignatureForm sets `user`
+    server-side, so it's never a field on the form itself. Same
+    comma-separated to_emails/cc_emails shape as
+    VerificationBankContactForm above."""
+
+    to_emails = forms.CharField(
+        label="To email(s)",
+        required=False,
+        widget=forms.TextInput(attrs={"placeholder": "e.g. ops@sct.com.np, ceo@sct.com.np", "class": "email-raw-input"}),
+    )
+
+    class Meta:
+        model = ScheduledReportRecipient
+        fields = ["label", "to_emails", "cc_emails", "is_active"]
+        labels = {"label": "Label (optional)", "cc_emails": "Cc email(s)", "is_active": "Active"}
+        widgets = {
+            "label": forms.TextInput(attrs={"placeholder": "e.g. Ops team — just for your own reference"}),
+            "cc_emails": forms.TextInput(attrs={"placeholder": "optional", "class": "email-raw-input"}),
+        }
+
+    def clean_to_emails(self):
+        raw = (self.cleaned_data.get("to_emails") or "").strip()
+        if not raw:
+            raise forms.ValidationError("At least one 'To' email is required.")
+        addresses = [a.strip() for a in raw.replace(";", ",").split(",") if a.strip()]
+        validator = forms.EmailField()
+        for addr in addresses:
+            validator.clean(addr)
+        return ", ".join(addresses)
+
+    def clean_cc_emails(self):
+        raw = (self.cleaned_data.get("cc_emails") or "").strip()
+        if not raw:
+            return ""
+        addresses = [a.strip() for a in raw.replace(";", ",").split(",") if a.strip()]
+        validator = forms.EmailField()
+        for addr in addresses:
+            validator.clean(addr)
+        return ", ".join(addresses)
+
+
 class MailSignatureForm(forms.ModelForm):
     """Lets any logged-in user add/edit their own outgoing-email
     signature(s) (core.models.MailSignature), from the "Extra" page's
@@ -334,6 +388,21 @@ class CreateUserForm(forms.Form):
     is_staff = forms.BooleanField(label="Staff", required=False, initial=False)
     is_superuser = forms.BooleanField(label="Admin", required=False, initial=False)
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # One checkbox per core.permissions.FEATURES entry — a superuser
+        # doesn't need any of these ticked (has_feature() always says yes
+        # to a superuser), so they only matter for a non-admin login.
+        for name, label in FEATURES:
+            self.fields[name] = forms.BooleanField(label=label, required=False, initial=False)
+
+    @property
+    def feature_fields(self):
+        """Bound fields for just the core.permissions.FEATURES checkboxes
+        — lets the template render them as one group, separate from
+        username/email/password/is_active/is_staff/is_superuser."""
+        return [self[name] for name, _label in FEATURES]
+
     def clean_username(self):
         username = (self.cleaned_data.get("username") or "").strip()
         if not username:
@@ -351,7 +420,7 @@ class CreateUserForm(forms.Form):
         return password
 
     def save(self):
-        return get_user_model().objects.create_user(
+        user = get_user_model().objects.create_user(
             username=self.cleaned_data["username"],
             email=self.cleaned_data.get("email") or "",
             password=self.cleaned_data["password"],
@@ -359,6 +428,11 @@ class CreateUserForm(forms.Form):
             is_staff=self.cleaned_data.get("is_staff", False),
             is_superuser=self.cleaned_data.get("is_superuser", False),
         )
+        UserAccess.objects.create(
+            user=user,
+            **{name: self.cleaned_data.get(name, False) for name, _label in FEATURES},
+        )
+        return user
 
 
 class UpdateUserForm(forms.Form):
@@ -391,6 +465,11 @@ class UpdateUserForm(forms.Form):
     def __init__(self, *args, instance=None, **kwargs):
         self.instance = instance
         super().__init__(*args, **kwargs)
+        access = get_user_access(instance) if instance is not None else None
+        for name, label in FEATURES:
+            self.fields[name] = forms.BooleanField(
+                label=label, required=False, initial=getattr(access, name, False) if access else False
+            )
 
     def clean_username(self):
         username = (self.cleaned_data.get("username") or "").strip()
@@ -422,4 +501,8 @@ class UpdateUserForm(forms.Form):
         if self.cleaned_data.get("password"):
             user.set_password(self.cleaned_data["password"])
         user.save()
+        access = get_user_access(user)
+        for name, _label in FEATURES:
+            setattr(access, name, self.cleaned_data.get(name, False))
+        access.save()
         return user

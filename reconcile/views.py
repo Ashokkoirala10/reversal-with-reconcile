@@ -5,7 +5,7 @@ from email.mime.image import MIMEImage
 from pathlib import Path
 
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required, user_passes_test
+from django.contrib.auth.decorators import login_required
 from django.contrib.staticfiles import finders
 from django.core.files import File
 from django.core.mail import EmailMultiAlternatives
@@ -22,6 +22,7 @@ from django.views.decorators.http import require_POST
 from core import switch_db
 from core.audit import log_action
 from core.forms import DbFetchForm
+from core.permissions import require_feature
 from core.services import (
     MAIL_SIGNATURE_IMAGE_CID,
     ProcessingError,
@@ -40,10 +41,6 @@ from .statements import StatementError, write_combined_statement_csv
 from .transactions import TransactionFileError, load_transactions
 
 PAGE_SIZE = 10
-
-
-def is_admin(user):
-    return user.is_authenticated and user.is_staff
 
 
 def can_toggle_passed(user, run):
@@ -76,7 +73,7 @@ def _panel_context(request):
     return {"shared_page": shared_page, "mine_page": mine_page}
 
 
-@login_required
+@require_feature("can_reconcile")
 def reconcile_view(request):
     if request.method == "POST":
         mode = request.POST.get("mode", "upload")
@@ -408,8 +405,7 @@ def download_file_view(request, run_id, kind):
     return FileResponse(field.open("rb"), as_attachment=True, filename=filename or field.name)
 
 
-@login_required
-@user_passes_test(is_admin, login_url="reconcile:reconcile")
+@require_feature("can_audit_log")
 def audit_log_view(request):
     # The Reconcile audit log now lives on the same page as the Reversal
     # one (core:audit_log, "Reconcile" section below "Reversal") instead

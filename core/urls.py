@@ -36,6 +36,22 @@ urlpatterns = [
         views.verification_send_mail_view,
         name="verification_send_mail",
     ),
+    path(
+        "bank-statement/scheduler/add-recipient/<str:report_type>/",
+        views.add_scheduled_recipient_view,
+        name="add_scheduled_recipient",
+    ),
+    path(
+        "bank-statement/scheduler/update-recipient/<int:recipient_id>/",
+        views.update_scheduled_recipient_view,
+        name="update_scheduled_recipient",
+    ),
+    path(
+        "bank-statement/scheduler/delete-recipient/<int:recipient_id>/",
+        views.delete_scheduled_recipient_view,
+        name="delete_scheduled_recipient",
+    ),
+    path("bank-statement/scheduler/toggle/<str:job_key>/", views.scheduler_toggle_view, name="scheduler_toggle"),
     path("bank-statement/create-user/", views.create_user_view, name="create_user"),
     path("bank-statement/delete-user/<int:user_id>/", views.delete_user_view, name="delete_user"),
     path("bank-statement/update-user/<int:user_id>/", views.update_user_view, name="update_user"),
