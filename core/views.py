@@ -9,7 +9,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth import views as auth_views
-from django.contrib.auth.decorators import login_required, user_passes_test
+from django.contrib.auth.decorators import login_required
 from django.contrib.staticfiles import finders
 from django.core.files import File
 from django.core.files.base import ContentFile
@@ -34,6 +34,7 @@ from .forms import (
     CreateUserForm,
     DbFetchForm,
     MailSignatureForm,
+    ScheduledReportRecipientForm,
     UpdateUserForm,
     UploadForm,
     VerificationBankContactForm,
@@ -44,9 +45,13 @@ from .models import (
     MailSignature,
     MemberAggregatorStat,
     ProcessingLog,
+    ScheduledReportRecipient,
+    SchedulerJobState,
     SeenNetworkReferenceId,
+    UserAccess,
     VerificationBankContact,
 )
+from .permissions import FEATURES, get_user_access, has_feature, require_feature, user_feature_flags
 from .report_constants import MONTH_NAMES as _MONTH_NAMES
 from .report_constants import REASON_ORDER as _REASON_ORDER
 from .services import (
@@ -73,10 +78,6 @@ def is_admin(user):
     return user.is_authenticated and user.is_staff
 
 
-def is_superadmin(user):
-    return user.is_authenticated and user.is_superuser
-
-
 def can_toggle_passed(user, log):
     return user.is_staff or user.username == log.uploaded_by
 
@@ -86,7 +87,7 @@ class BrandedLoginView(auth_views.LoginView):
     redirect_authenticated_user = True
 
 
-@login_required
+@require_feature("can_reversal")
 def upload_view(request):
     if request.method == "POST":
         mode = request.POST.get("mode", "upload")
@@ -263,7 +264,14 @@ def upload_view(request):
 
 @login_required
 def bank_statement_upload_view(request):
+    # The "Extra" page itself stays reachable to any logged-in user (it
+    # also hosts the ungated Mail signature tab), but actually running a
+    # bank-statement check — the only thing this view's POST branch does —
+    # is its own gated feature.
     if request.method == "POST":
+        if not has_feature(request.user, "can_check_statements"):
+            messages.error(request, "You don't have access to Check statements.")
+            return redirect("core:bank_statement_upload")
         form = BankStatementUploadForm(request.POST, request.FILES, user=request.user)
         if form.is_valid():
             log = form.cleaned_data["target_log"]
@@ -409,54 +417,124 @@ def bank_statement_upload_view(request):
     else:
         form = BankStatementUploadForm(user=request.user)
 
+    feat = user_feature_flags(request.user)
     context = _extra_page_context(request)
     context["form"] = form
     tab = request.GET.get("tab")
-    if tab in _EXTRA_TABS:
-        context["active_extra_tab"] = tab
+    if not (tab in _EXTRA_TABS and _tab_allowed(tab, feat)):
+        tab = _default_extra_tab(feat)
+    context["active_extra_tab"] = tab
     return render(request, "core/bank_statement_upload.html", context)
 
 
-_EXTRA_TABS = {"check", "addbank", "createuser", "verify", "bankcontacts", "mailsignature"}
+_EXTRA_TABS = {"check", "addbank", "createuser", "verify", "bankcontacts", "scheduler", "mailsignature"}
+# (tab name, gating FEATURES flag name — or None if every logged-in user
+# can see it) in the order to fall back through when picking which tab a
+# user should land on by default, so nobody without e.g. Check statements
+# access lands on a tab that's hidden for them.
+_EXTRA_TAB_ORDER = [
+    ("check", "can_check_statements"),
+    ("addbank", "can_issuer_bank_accounts"),
+    ("createuser", "can_make_users"),
+    ("verify", "can_verification_format"),
+    ("bankcontacts", "can_bank_contacts"),
+    ("scheduler", "can_scheduler"),
+    ("mailsignature", None),
+]
+
+
+def _tab_allowed(tab: str, feat: dict) -> bool:
+    flag = dict(_EXTRA_TAB_ORDER).get(tab)
+    return flag is None or feat.get(flag, False)
+
+
+def _default_extra_tab(feat: dict) -> str:
+    for name, flag in _EXTRA_TAB_ORDER:
+        if flag is None or feat.get(flag):
+            return name
+    return "mailsignature"
 
 
 def _extra_page_context(request):
     """Shared context for the "Extra" page's tabs (Check bank statement /
     Add bank account / Make user / Verification format / Bank contacts /
     Mail signature). Each tab's own view fills in its own form/result on
-    top of this."""
-    context = {"form": BankStatementUploadForm(user=request.user), "verification_form": VerificationFormatUploadForm()}
+    top of this. Every tab but Mail signature is gated by its own
+    core.permissions.FEATURES flag — a tab's form/data is only put in the
+    context (and so only rendered) when the logged-in user actually has
+    that feature; a superuser has every flag by definition."""
+    feat = user_feature_flags(request.user)
+    context = {
+        "form": BankStatementUploadForm(user=request.user),
+        "features": FEATURES,
+        **{f"feat_{k}": v for k, v in feat.items()},
+    }
     # "Mail signature" tab — who an outgoing email (verification "Send
     # mail" or a reconcile issue-note "notify others" alert) is signed as
-    # (core.models.MailSignature). Per-user, not admin-only: everyone
+    # (core.models.MailSignature). Per-user, not role-gated: everyone
     # manages their own list and picks their own active one — see
     # core.services.resolve_mail_signature().
     context["mail_signature_form"] = MailSignatureForm()
     context["mail_signatures"] = MailSignature.objects.filter(user=request.user)
-    if is_admin(request.user):
-        # "Extra" page's second tab — add-bank-account feature for Admin
-        # (is_staff) users. Full CRUD on bank accounts (edit/delete) stays
-        # superuser-only via Django admin (see core/admin.py); this is
-        # just a quick "add a new one" form plus a read-only reference
-        # list of what's currently configured.
+    if feat["can_verification_format"]:
+        context["verification_form"] = VerificationFormatUploadForm()
+    if feat["can_issuer_bank_accounts"]:
+        # "Extra" page's second tab — add-bank-account feature. Full CRUD
+        # on bank accounts (edit/delete) stays superuser-only via Django
+        # admin (see core/admin.py); this is just a quick "add a new one"
+        # form plus a read-only reference list of what's currently
+        # configured.
         context["bank_form"] = BankAccountForm()
         context["bank_accounts"] = BankAccount.objects.order_by("bank_name")
+    if feat["can_bank_contacts"]:
         # "Bank contacts" tab — same self-service pattern as bank_form
         # above, but for the Creditor-Bank -> email mapping used by the
         # "Verification format" tab's per-bank "Send mail" buttons.
         context["bank_contact_form"] = VerificationBankContactForm()
         context["bank_contacts"] = VerificationBankContact.objects.order_by("bank_name")
-    if is_superadmin(request.user):
-        # "Make user" tab — Admin (is_superuser) only, unlike the rest of
-        # this page's tabs which just need is_staff, since it can grant
-        # staff/admin rights to a brand new login.
+    if feat["can_make_users"]:
+        # "Make user" tab. Only an actual superuser may grant Staff/Admin
+        # or any of these per-feature flags to someone else — see
+        # create_user_view/update_user_view, which strip those fields
+        # server-side for a non-superuser account manager.
         context["create_user_form"] = CreateUserForm()
-        context["all_users"] = get_user_model().objects.order_by("-date_joined")
+        users_paginator = Paginator(get_user_model().objects.order_by("-date_joined"), PAGE_SIZE)
+        users_page = users_paginator.get_page(request.GET.get("userpage"))
+        access_map = {a.user_id: a for a in UserAccess.objects.filter(user__in=users_page.object_list)}
+        for u in users_page.object_list:
+            # Not "u.access" — that name collides with UserAccess's own
+            # related_name="access" reverse-O2O descriptor on User, whose
+            # getter raises RelatedObjectDoesNotExist for any user without
+            # a row yet (crashes this loop instead of just being falsy).
+            u.user_access = access_map.get(u.id)
+            if u.is_superuser:
+                u.access_summary = "All (Admin)"
+            else:
+                labels = [label for name, label in FEATURES if getattr(u.user_access, name, False)]
+                u.access_summary = ", ".join(labels) if labels else "—"
+        context["all_users"] = users_page.object_list
+        context["users_page"] = users_page
+    if feat["can_scheduler"]:
+        # "Scheduler" tab — recipient lists + Start/Stop for both
+        # core.scheduler background jobs. Both job rows always exist
+        # (get_or_create, defaulting to stopped) so the template can show
+        # a status line even before either has ever been touched.
+        context["dispute_recipient_form"] = ScheduledReportRecipientForm()
+        context["dispute_recipients"] = ScheduledReportRecipient.objects.filter(
+            report_type=ScheduledReportRecipient.REPORT_DISPUTE_ALERT
+        )
+        context["daily_recipient_form"] = ScheduledReportRecipientForm()
+        context["daily_recipients"] = ScheduledReportRecipient.objects.filter(
+            report_type=ScheduledReportRecipient.REPORT_DAILY_REPORT
+        )
+        dispute_state, _ = SchedulerJobState.objects.get_or_create(job_key=SchedulerJobState.JOB_DISPUTE_ALERT)
+        daily_state, _ = SchedulerJobState.objects.get_or_create(job_key=SchedulerJobState.JOB_DAILY_REPORT)
+        context["dispute_job_state"] = dispute_state
+        context["daily_job_state"] = daily_state
     return context
 
 
-@login_required
-@user_passes_test(is_admin, login_url="core:upload")
+@require_feature("can_issuer_bank_accounts")
 @require_POST
 def add_bank_account_view(request):
     """Add a new Debtor-Bank -> Debit-Account mapping (core.models.BankAccount)
@@ -480,8 +558,7 @@ def add_bank_account_view(request):
     return redirect(f"{reverse('core:bank_statement_upload')}?tab=addbank")
 
 
-@login_required
-@user_passes_test(is_admin, login_url="core:upload")
+@require_feature("can_bank_contacts")
 @require_POST
 def add_verification_bank_contact_view(request):
     """Add a new Creditor-Bank -> email-contact mapping
@@ -504,8 +581,7 @@ def add_verification_bank_contact_view(request):
     return redirect(f"{reverse('core:bank_statement_upload')}?tab=bankcontacts")
 
 
-@login_required
-@user_passes_test(is_admin, login_url="core:upload")
+@require_feature("can_bank_contacts")
 @require_POST
 def update_verification_bank_contact_view(request, contact_id):
     """Edit an existing Creditor-Bank -> email-contact mapping from the
@@ -523,6 +599,98 @@ def update_verification_bank_contact_view(request, contact_id):
             for err in errors:
                 messages.error(request, f"{label}: {err}")
     return redirect(f"{reverse('core:bank_statement_upload')}?tab=bankcontacts")
+
+
+_SCHEDULER_JOB_KEYS = {SchedulerJobState.JOB_DISPUTE_ALERT, SchedulerJobState.JOB_DAILY_REPORT}
+
+
+@require_feature("can_scheduler")
+@require_POST
+def add_scheduled_recipient_view(request, report_type):
+    """Add a recipient row (core.models.ScheduledReportRecipient) for
+    either core.scheduler background job — which one is fixed by
+    `report_type` (which of the "Scheduler" tab's two "Add" forms was
+    submitted), not user-editable, same as add_mail_signature_view sets
+    `user` server-side below."""
+    if report_type not in dict(ScheduledReportRecipient.REPORT_TYPE_CHOICES):
+        raise Http404("Unknown report type")
+    form = ScheduledReportRecipientForm(request.POST)
+    if form.is_valid():
+        recipient = form.save(commit=False)
+        recipient.report_type = report_type
+        recipient.save()
+        messages.success(request, f"Recipient '{recipient.label or recipient.to_emails}' added.")
+        log_action(
+            request, f"Added {recipient.get_report_type_display()} recipient '{recipient.label or recipient.to_emails}'"
+        )
+    else:
+        for field, errors in form.errors.items():
+            label = form.fields[field].label if field in form.fields else field
+            for err in errors:
+                messages.error(request, f"{label}: {err}")
+    return redirect(f"{reverse('core:bank_statement_upload')}?tab=scheduler")
+
+
+@require_feature("can_scheduler")
+@require_POST
+def update_scheduled_recipient_view(request, recipient_id):
+    recipient = get_object_or_404(ScheduledReportRecipient, id=recipient_id)
+    form = ScheduledReportRecipientForm(request.POST, instance=recipient)
+    if form.is_valid():
+        recipient = form.save()
+        messages.success(request, f"Recipient '{recipient.label or recipient.to_emails}' updated.")
+        log_action(request, f"Updated {recipient.get_report_type_display()} recipient (#{recipient.id})")
+    else:
+        for field, errors in form.errors.items():
+            label = form.fields[field].label if field in form.fields else field
+            for err in errors:
+                messages.error(request, f"{label}: {err}")
+    return redirect(f"{reverse('core:bank_statement_upload')}?tab=scheduler")
+
+
+@require_feature("can_scheduler")
+@require_POST
+def delete_scheduled_recipient_view(request, recipient_id):
+    recipient = get_object_or_404(ScheduledReportRecipient, id=recipient_id)
+    label = recipient.label or recipient.to_emails
+    report_label = recipient.get_report_type_display()
+    recipient.delete()
+    messages.success(request, f"Recipient '{label}' removed.")
+    log_action(request, f"Removed {report_label} recipient '{label}'")
+    return redirect(f"{reverse('core:bank_statement_upload')}?tab=scheduler")
+
+
+@require_feature("can_scheduler")
+@require_POST
+def scheduler_toggle_view(request, job_key):
+    """Start/Stop button behind the "Scheduler" tab — flips
+    core.models.SchedulerJobState.is_enabled, which is all core.scheduler's
+    always-ticking job functions actually check. Starting resets the
+    dispute-alert rolling window cursor to right now, so re-enabling after
+    a while stopped doesn't immediately email every timeout that piled up
+    while it was off — only new ones from this point on (harmless no-op
+    for the daily report job, which doesn't use that cursor)."""
+    if job_key not in _SCHEDULER_JOB_KEYS:
+        raise Http404("Unknown job")
+    action = request.POST.get("action")
+    state, _ = SchedulerJobState.objects.get_or_create(job_key=job_key)
+    if action == "start":
+        state.is_enabled = True
+        state.last_checked_at = timezone.now()
+        state.last_result = ""
+        state.updated_by = request.user.username
+        state.save(update_fields=["is_enabled", "last_checked_at", "last_result", "updated_by", "updated_at"])
+        messages.success(request, f"{state.get_job_key_display()} started.")
+        log_action(request, f"Started scheduler job '{state.get_job_key_display()}'")
+    elif action == "stop":
+        state.is_enabled = False
+        state.updated_by = request.user.username
+        state.save(update_fields=["is_enabled", "updated_by", "updated_at"])
+        messages.success(request, f"{state.get_job_key_display()} stopped.")
+        log_action(request, f"Stopped scheduler job '{state.get_job_key_display()}'")
+    else:
+        messages.error(request, "Unknown action.")
+    return redirect(f"{reverse('core:bank_statement_upload')}?tab=scheduler")
 
 
 @login_required
@@ -575,22 +743,37 @@ def update_mail_signature_view(request, signature_id):
     return redirect(f"{reverse('core:bank_statement_upload')}?tab=mailsignature")
 
 
-@login_required
-@user_passes_test(is_superadmin, login_url="core:upload")
+def _sanitize_user_permission_fields(form, request_user, target=None):
+    """Only an actual superuser may grant Staff/Admin status or any
+    core.permissions.FEATURES flag through the "Make user" tab — someone
+    who can merely reach that tab (has the Make users feature, but isn't
+    a superuser) can still create/edit plain accounts, but every
+    privileged field on the submitted form is silently pinned back to
+    what it already was (False for a brand new user, the target's
+    current values for an edit) instead of trusting the POST body."""
+    if request_user.is_superuser:
+        return
+    existing_access = get_user_access(target) if target is not None else None
+    form.cleaned_data["is_staff"] = target.is_staff if target is not None else False
+    form.cleaned_data["is_superuser"] = target.is_superuser if target is not None else False
+    for name, _label in FEATURES:
+        form.cleaned_data[name] = getattr(existing_access, name, False) if existing_access is not None else False
+
+
+@require_feature("can_make_users")
 def create_user_view(request):
-    """"Make user" tab on the "Extra" page — Admin (is_superuser) only,
-    unlike the other "Extra" tabs which just need is_staff. Renders the
-    outcome (success or validation errors) as a popup on this same
-    response instead of redirecting, so there's no page reload around it —
-    on error, whatever was already typed (other than the password, which
-    Django's PasswordInput never echoes back) is still sitting in the
-    form."""
+    """"Make user" tab on the "Extra" page. Renders the outcome (success
+    or validation errors) as a popup on this same response instead of
+    redirecting, so there's no page reload around it — on error, whatever
+    was already typed (other than the password, which Django's
+    PasswordInput never echoes back) is still sitting in the form."""
     context = _extra_page_context(request)
     context["active_extra_tab"] = "createuser"
 
     if request.method == "POST":
         form = CreateUserForm(request.POST)
         if form.is_valid():
+            _sanitize_user_permission_fields(form, request.user)
             user = form.save()
             context["create_user_form"] = CreateUserForm()
             context["create_user_result"] = {"success": True, "message": f"User '{user.username}' created."}
@@ -607,14 +790,16 @@ def create_user_view(request):
     return render(request, "core/bank_statement_upload.html", context)
 
 
-@login_required
-@user_passes_test(is_superadmin, login_url="core:upload")
+@require_feature("can_make_users")
 @require_POST
 def delete_user_view(request, user_id):
     """Delete a login from the "Extra" page's Make user tab's user list.
-    Admin (is_superuser) only. Deliberately blocks deleting your own
-    account from here — an easy way to accidentally lock yourself out."""
+    Deliberately blocks deleting your own account from here — an easy way
+    to accidentally lock yourself out."""
     target = get_object_or_404(get_user_model(), id=user_id)
+    if not request.user.is_superuser and (target.is_staff or target.is_superuser):
+        messages.error(request, "Only a superuser can delete a Staff or Admin account.")
+        return redirect(f"{reverse('core:bank_statement_upload')}?tab=createuser")
     if target.id == request.user.id:
         messages.error(request, "You can't delete your own account.")
     else:
@@ -625,18 +810,21 @@ def delete_user_view(request, user_id):
     return redirect(f"{reverse('core:bank_statement_upload')}?tab=createuser")
 
 
-@login_required
-@user_passes_test(is_superadmin, login_url="core:upload")
+@require_feature("can_make_users")
 @require_POST
 def update_user_view(request, user_id):
     """Edit a login's details from the "Extra" page's Make user tab's user
-    list — the Edit button next to Delete. Admin (is_superuser) only. The
-    password field is optional (blank keeps the existing one). Also blocks
-    a superuser from stripping their own admin/active status here, for the
-    same lock-yourself-out reason delete blocks deleting yourself."""
+    list — the Edit button next to Delete. The password field is optional
+    (blank keeps the existing one). Also blocks a superuser from stripping
+    their own admin/active status here, for the same lock-yourself-out
+    reason delete blocks deleting yourself."""
     target = get_object_or_404(get_user_model(), id=user_id)
+    if not request.user.is_superuser and (target.is_staff or target.is_superuser) and target.id != request.user.id:
+        messages.error(request, "Only a superuser can edit a Staff or Admin account.")
+        return redirect(f"{reverse('core:bank_statement_upload')}?tab=createuser")
     form = UpdateUserForm(request.POST, instance=target)
     if form.is_valid():
+        _sanitize_user_permission_fields(form, request.user, target=target)
         is_self = target.id == request.user.id
         if is_self and not (form.cleaned_data.get("is_superuser") and form.cleaned_data.get("is_active")):
             messages.error(request, "You can't remove your own admin or active status.")
@@ -652,7 +840,7 @@ def update_user_view(request, user_id):
     return redirect(f"{reverse('core:bank_statement_upload')}?tab=createuser")
 
 
-@login_required
+@require_feature("can_verification_format")
 def verification_format_view(request):
     """"Verification format" tab on the "Extra" page: upload a dispute
     transaction export and convert it, in memory only, to the 13-column
@@ -724,6 +912,9 @@ def verification_send_mail_view(request):
     JSON so the page can show the result without losing the conversion
     it's already showing (a normal redirect would lose that state, since
     nothing here is persisted)."""
+    if not has_feature(request.user, "can_verification_format"):
+        return JsonResponse({"success": False, "message": "You don't have access to Verification format."}, status=403)
+
     contact_id = request.POST.get("contact_id")
     bank_name = (request.POST.get("bank_name") or "").strip()
     filename = request.POST.get("filename") or "verification.xlsx"
@@ -868,8 +1059,7 @@ def download_file_view(request, log_id, kind):
 AUDIT_LOG_PAGE_SIZE = 15
 
 
-@login_required
-@user_passes_test(is_admin, login_url="core:upload")
+@require_feature("can_audit_log")
 def audit_log_view(request):
     rows = []
     for line in read_events():
@@ -882,8 +1072,7 @@ def audit_log_view(request):
     return render(request, "core/audit_log.html", {"page_obj": page_obj})
 
 
-@login_required
-@user_passes_test(is_admin, login_url="core:upload")
+@require_feature("can_audit_log")
 def export_audit_log_view(request):
     """Serves the actual audit_log.txt file on disk (see core/audit.py) —
     not a copy rebuilt from some other source, the real file every action
@@ -2053,21 +2242,17 @@ def _populate_buckets_sheet(ws, buckets):
     _autosize(ws)
 
 
-@login_required
-def export_general_report_view(request):
-    """The General tab's full report as one .xlsx with one sheet per
+def _build_general_report_workbook(report, period):
+    """The General tab's full report as one workbook, one sheet per
     section (Summary / Member-wise / Aggregator-wise / Failed On-Us /
     Failed Off-Us / Success buckets / Issuer / Acquirer) — separate
     sheets rather than one long stacked sheet, so each table gets its own
     header/freeze-pane and Excel's normal sheet-tab navigation, instead
     of one giant sheet where a later section's freeze pane fights with
     an earlier one and most of the content ends up unreachable by
-    scrolling."""
-    from_date, to_date, report, error, period, suffix = _general_period_bits(request)
-
-    if error:
-        return _finalize_xlsx(request, _general_error_workbook(error, period), f"general_report_{suffix}.xlsx")
-
+    scrolling. Split out from export_general_report_view() so
+    core.scheduler's daily-report email can build the same workbook
+    without a `request` to hand `_finalize_xlsx()`."""
     wb, ws = _new_sheet("Summary")
     row = _write_title(ws, "General report (live switch DB)", period)
     row = _write_section(ws, row, "Volume")
@@ -2089,7 +2274,17 @@ def export_general_report_view(request):
     _populate_buckets_sheet(wb.create_sheet("Success Buckets"), report["buckets"])
     _populate_named_split_sheet(wb.create_sheet("Issuer (Debtor bank)"), "Bank", report["issuer_rows"])
     _populate_named_split_sheet(wb.create_sheet("Acquirer (Creditor)"), "Bank", report["acquirer_rows"])
+    return wb
 
+
+@login_required
+def export_general_report_view(request):
+    from_date, to_date, report, error, period, suffix = _general_period_bits(request)
+
+    if error:
+        return _finalize_xlsx(request, _general_error_workbook(error, period), f"general_report_{suffix}.xlsx")
+
+    wb = _build_general_report_workbook(report, period)
     return _finalize_xlsx(request, wb, f"general_report_{suffix}.xlsx")
 
 

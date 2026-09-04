@@ -366,6 +366,19 @@ document.getElementById('reconcile-form').addEventListener('submit', function ()
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Reconciling\u2026';
 });
+window.addEventListener('pageshow', function (e) {
+    // Bfcache restore (e.g. browser Back after a redirect) brings back the
+    // DOM exactly as it was when we navigated away \u2014 including the submit
+    // button left disabled/spinning by the handler above. Without this, a
+    // second "Reconcile" click after going back does nothing at all.
+    if (e.persisted) {
+        var btn = document.getElementById('reconcile-submit-btn');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = 'Reconcile';
+        }
+    }
+});
 </script>
 <script>
 (function () {
@@ -374,6 +387,9 @@ document.getElementById('reconcile-form').addEventListener('submit', function ()
     var dbField = document.getElementById('txn-db-field');
     var uploadBtn = document.getElementById('txn-mode-upload-btn');
     var dbBtn = document.getElementById('txn-mode-db-btn');
+    var txnFileInput = document.getElementById('{{ form.transaction_file.id_for_label }}');
+    var fromDateInput = document.getElementById('{{ db_fetch_form.from_date.id_for_label }}');
+    var toDateInput = document.getElementById('{{ db_fetch_form.to_date.id_for_label }}');
     if (!modeInput || !uploadField || !dbField || !uploadBtn || !dbBtn) return;
 
     function setMode(mode) {
@@ -382,6 +398,13 @@ document.getElementById('reconcile-form').addEventListener('submit', function ()
         dbField.style.display = mode === 'db_fetch' ? '' : 'none';
         uploadBtn.classList.toggle('is-active', mode === 'upload');
         dbBtn.classList.toggle('is-active', mode === 'db_fetch');
+        // The inactive section stays in the DOM (just hidden) so its
+        // required fields must be un-required, or the browser silently
+        // blocks submission on a hidden-but-required, unfocusable field —
+        // no error shown, the submit just does nothing.
+        if (txnFileInput) { txnFileInput.required = mode === 'upload'; }
+        if (fromDateInput) { fromDateInput.required = mode === 'db_fetch'; }
+        if (toDateInput) { toDateInput.required = mode === 'db_fetch'; }
     }
 
     uploadBtn.addEventListener('click', function () { setMode('upload'); });

@@ -4,6 +4,15 @@ register = template.Library()
 
 
 @register.filter
+def attr(obj, name):
+    """Dynamic attribute lookup for a template loop where the attribute
+    name itself is a variable — e.g. rendering one checkbox per
+    core.permissions.FEATURES entry against a UserAccess instance without
+    hardcoding all 8 field names in the template."""
+    return getattr(obj, name, False)
+
+
+@register.filter
 def npr(value):
     """Format a Rupee amount compactly using the Nepali/Indian numbering
     system (Lakh = 1,00,000 / Crore = 1,00,00,000) so large, ever-growing
