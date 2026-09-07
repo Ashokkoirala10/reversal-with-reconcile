@@ -19,7 +19,9 @@ and why."
 9. [`reconcile` app — the reconciliation engine](#9-reconcile-app--the-reconciliation-engine)
 10. [`reconcile` app — reporting & dashboard](#10-reconcile-app--reporting--dashboard)
 11. [Auth & permissions model](#11-auth--permissions-model)
-12. [Known limitations / operational notes](#12-known-limitations--operational-notes)
+12. [`core.switch_db` — read-only "Fetch from DB" + General report](#12-coreswitch_db--read-only-fetch-from-db--general-report)
+13. [`core.scheduler` — background alert & report jobs](#13-corescheduler--background-alert--report-jobs)
+14. [Known limitations / operational notes](#14-known-limitations--operational-notes)
 
 ---
 
@@ -45,6 +47,13 @@ framework) — views build context dicts, templates render HTML, and the
 `FileField`, or (for the one in-memory-only feature — Verification
 format) a base64 data URI embedded directly in the page.
 
+Both apps' upload flows also accept **"Fetch from DB"** as an alternative
+to a manual file upload — pulling the same shape of data straight out of
+the switch's own Postgres database for a chosen date range (§12) — and a
+shared **in-process scheduler** (§13) runs two background jobs (a
+per-minute dispute/timeout alert, a 09:00 daily report) independent of any
+user action.
+
 Storage: SQLite (`db.sqlite3`), file uploads/outputs under `media/`.
 No task queue, no caching layer beyond a single `lru_cache` for the
 bank-account lookup table (see §11).
@@ -64,11 +73,21 @@ reversal_project/
 │   └── urls.py                 # mounts "/", "reconcile/", "admin/"
 ├── core/                       # the "reversal" app
 │   ├── models.py                # ProcessingLog, SeenNetworkReferenceId,
-│   │                             # MemberAggregatorStat, BankAccount
-│   ├── forms.py                 # UploadForm, BankStatementUploadForm,
-│   │                             # BankAccountForm, CreateUserForm,
-│   │                             # UpdateUserForm, VerificationFormatUploadForm
+│   │                             # MemberAggregatorStat, BankAccount,
+│   │                             # VerificationBankContact, MailSignature,
+│   │                             # UserAccess, ScheduledReportRecipient,
+│   │                             # SchedulerJobState, AlertedTimeoutTransaction,
+│   │                             # UserNotificationPreference, DisputeNotificationEvent
+│   ├── forms.py                 # UploadForm (incl. DbFetchForm),
+│   │                             # BankStatementUploadForm, BankAccountForm,
+│   │                             # CreateUserForm, UpdateUserForm,
+│   │                             # VerificationFormatUploadForm
 │   ├── services.py               # ~2000 lines — ALL business logic
+│   ├── switch_db.py              # read-only switch-DB connector ("Fetch from DB")
+│   ├── general_report.py         # live analytics straight from the switch DB
+│   ├── scheduler.py              # dispute/timeout alert + daily report jobs
+│   ├── permissions.py            # UserAccess-backed per-feature gating
+│   ├── apps.py                   # starts the scheduler once per real server process
 │   ├── views.py                  # ~1600 lines
 │   ├── admin.py                  # custom UserAdmin + BankAccount/ProcessingLog
 │   ├── urls.py
@@ -130,6 +149,63 @@ Member-wise / Aggregator-wise reports.
 (§11). Global IME Bank and Prabhu Bank ship as the seeded defaults;
 adding a row here is how a new bank gets a debit account without a code
 change.
+
+**`VerificationBankContact`** — Creditor-Bank → To/Cc email mapping used
+by the Verification format tab's "Send mail" button (§6): a converted
+dispute file's rows are grouped by Creditor Bank, and any group whose bank
+matches an active row here (by `keyword`) can be emailed in one click. A
+group with no matching contact still shows its count but the button stays
+disabled — nothing is ever sent to a guessed address.
+
+**`MailSignature`** — per-user email signature(s) (name, title, mobile,
+company/address/toll-free/website, each individually overridable or left
+blank to fall back to the `MAIL_SIGNATURE_*` settings/.env defaults) used
+to sign outgoing verification and scheduler-adjacent notification emails.
+`user` is nullable only to keep pre-per-user rows working as a fallback;
+`resolve_mail_signature()` (`core/services.py`) picks the sending user's
+own most-recently-updated active row first, then a legacy `user=None`
+row, then the settings defaults. Not gated by `UserAccess` — every user
+manages their own regardless of role.
+
+**`UserAccess`** — one row per user, one boolean per gated feature area
+(`can_reversal`, `can_reconcile`, `can_verification_format`,
+`can_check_statements`, `can_audit_log`, `can_bank_contacts`,
+`can_issuer_bank_accounts`, `can_make_users`, `can_scheduler`). A
+superuser bypasses this entirely (§11); this is the actual access-control
+model for everyone else, replacing what used to be a flat `is_staff`
+admin/regular split.
+
+**`ScheduledReportRecipient`** — who `core.scheduler`'s two background
+jobs email, one row per recipient group per `report_type`
+(`dispute_alert` / `daily_report`). Multiple active rows for the same
+`report_type` are all merged into one send (their To/Cc lists combined) —
+same shape as `VerificationBankContact.to_emails`/`cc_emails`, just not
+keyed by bank.
+
+**`SchedulerJobState`** — one row per background job: whether it's
+currently enabled, and its last-run outcome/timestamp. The Extra page's
+Scheduler tab toggle reads/writes this row rather than talking to the
+scheduler process directly — see §13 for why that's what actually makes
+Start/Stop work regardless of how many worker processes serve the app.
+
+**`AlertedTimeoutTransaction`** — dedup ledger keyed by Network Reference
+Id, one row per transaction that has already gone out in a dispute/
+timeout alert email. Necessary because each check's query window
+deliberately overlaps the previous one (§13) — this table, not the
+window, is what guarantees a transaction is never alerted twice.
+
+**`UserNotificationPreference`** — one row per user: whether they've
+turned on the "Desktop alerts" checkbox (Extra page → Scheduler tab, next
+to the dispute/timeout alert's Start/Stop row, §6). Self-managed like
+`MailSignature` — no `UserAccess` gate, since it's a personal browser
+preference rather than a role-based feature.
+
+**`DisputeNotificationEvent`** — one row per `check_dispute_timeouts()`
+run that found new timeouts: just `count` + `created_at`. Written
+independently of whether the email actually had recipients configured
+(§13), so the browser-side poll (below) still fires even with no
+`ScheduledReportRecipient` rows set up. This is a separate, in-browser
+signal from the email alert — not a replacement for it.
 
 ### `reconcile` app (`reconcile/models.py`)
 
@@ -325,6 +401,71 @@ context (see `_extra_page_context()` in `views.py`):
   base64-encoded straight into the HTML response and offered as a
   download popup (a `<a download href="data:...;base64,...">` link). If
   the user never clicks download, nothing of that run persists anywhere.
+  The converted rows are also grouped by **Creditor Bank** right on the
+  page; a group whose bank matches an active `VerificationBankContact`
+  gets a **"Send mail"** button (`verification_send_mail_view`) that
+  builds and sends the email straight from the server (signed with the
+  sending user's `MailSignature`, `_attach_signature_image()` inlining the
+  banner image by Content-ID) — a group with no matching contact shows its
+  count with the button disabled. Bank contacts themselves are managed
+  from an "Add/update contact" form on the same tab
+  (`add_verification_bank_contact_view` / `update_verification_bank_contact_view`).
+- **Mail signature** — every logged-in user (regardless of `UserAccess`,
+  see §11) manages their own `MailSignature` row(s) here
+  (`add_mail_signature_view` / `update_mail_signature_view`): name, title,
+  mobile, and optional company/address/toll-free/website overrides. The
+  most recently updated active row is what `resolve_mail_signature()`
+  picks for that user's outgoing verification/notification emails (§3).
+- **Scheduler** — `can_scheduler`-gated. Toggle either background job
+  on/off (`scheduler_toggle_view`, flips `SchedulerJobState.is_enabled` —
+  see §13 for why a DB flag rather than actually starting/stopping the
+  APScheduler job is what makes this work across worker processes) and
+  manage each job's `ScheduledReportRecipient` rows
+  (`add_scheduled_recipient_view` / `update_scheduled_recipient_view` /
+  `delete_scheduled_recipient_view`) — comma-separated To/Cc per group,
+  every active group for a `report_type` merged into one send. Also hosts
+  the **"Desktop alerts"** checkbox, next to the dispute/timeout alert's
+  Start/Stop row — see below.
+
+### Desktop alerts (in-browser Notification + spoken TTS)
+
+A self-service checkbox (any logged-in user, no `UserAccess` gate — same
+model as Mail signature), toggled via `toggle_desktop_notifications_view`
+(flips `UserNotificationPreference.desktop_notifications_enabled`). Its
+JS lives inline in `bank_statement_upload.html` (not `base.html` — it's
+scoped to this page, so it only runs while this tab is open somewhere):
+
+- Turning it on calls the browser's `Notification.requestPermission()`
+  first; the preference is only persisted server-side once permission is
+  actually granted.
+- While on, it polls `poll_dispute_notifications_view` every 25 seconds
+  with `after_id` (the highest `DisputeNotificationEvent.id` this browser
+  has already alerted on, tracked in `localStorage` keyed by username).
+  The very first poll omits `after_id` entirely so the browser syncs its
+  cursor to "now" instead of alerting on every historical dispute.
+- On a new count, it shows a browser `Notification` **and** speaks the
+  same sentence via `SpeechSynthesisUtterance` — queued 3 times in a row
+  (`SPEAK_REPEAT_COUNT`), since `speechSynthesis.speak()` queues rather
+  than overlaps calls.
+- Works as long as this tab stays open (including minimized/backgrounded
+  or behind a locked screen) — stops once it's actually closed. This is
+  a deliberate scope decision: a true always-on background alert (working
+  even with every browser closed) would need a native OS-level helper
+  outside the browser entirely, which was tried and then explicitly
+  dropped as unnecessary complexity for this project.
+
+### Extra page layout
+
+Above the 780px breakpoint, `bank_statement_upload.html` lays the tabs
+out as a **left sidebar** (`.extra-sidebar`, vertical list, sticky while
+scrolling) next to a wider `.extra-content` panel — `main` renders with
+`{% block main_class %}wide{% endblock %}` (1360px cap instead of the
+site's usual 960px) to give the two columns room. Below 780px it
+collapses to a wrapping row of small pill buttons instead of a sidebar (a
+horizontal scroll-only strip was tried first and rejected — it hid every
+tab past the first without an obvious way to reach them).
+`showExtraTab()`'s show/hide-by-id logic is unchanged either way; only
+the CSS layout of the tab buttons differs.
 
 ---
 
@@ -564,24 +705,49 @@ equivalent of `core`'s dashboard day-click modal.
 ## 11. Auth & permissions model
 
 No self-registration; Django's built-in `auth.User`, standard
-session-based login (`core/views.py::BrandedLoginView`). Two permission
-concepts used throughout both apps, both plain Django flags — no custom
-group/permission system:
+session-based login (`core/views.py::BrandedLoginView`).
 
-- **`is_staff`** (checked as `is_admin()` in both apps' `views.py`) —
-  "Admin" in this app's everyday sense: sees the Audit Log, the
-  Dashboard, can add bank accounts, can check any user's file against a
-  statement (not just their own).
-- **`is_superuser`** (checked as `is_superadmin()`, `core` only) — a
-  stricter tier used *only* to gate the **Make user** tab, since that
-  feature can hand out `is_staff`/`is_superuser` to a brand-new account.
+Access control is **per-feature**, driven by `core/permissions.py` and the
+`UserAccess` model (§3) — not a blanket admin/regular split:
 
-Django's own admin site (`/admin/`) has a customized `UserAdmin`
-(`core/admin.py`) that strips the **Groups** / **User permissions**
-fields from the change form — this project doesn't use Django's
-group/permission system anywhere, so exposing that editor (there or on
-the Make-user tab) just invites confusion. `is_active`/`is_staff`/
-`is_superuser` remain, since those are what's actually checked.
+- **`is_superuser`** bypasses everything unconditionally
+  (`permissions.has_feature()`'s first check) — a superuser always has
+  every feature regardless of their `UserAccess` row's flags.
+- Everyone else is gated feature-by-feature against their own
+  `UserAccess` row: `can_reversal`, `can_reconcile`,
+  `can_verification_format`, `can_check_statements`, `can_audit_log`,
+  `can_bank_contacts`, `can_issuer_bank_accounts`, `can_make_users`,
+  `can_scheduler` (the `FEATURES` list in `permissions.py`, paired with a
+  human label used both in the "Make user" tab's checkboxes and in the
+  "you don't have access to X" flash message).
+- `permissions.get_user_access(user)` does a `get_or_create()` so a login
+  created before this model existed (e.g. straight via
+  `manage.py createsuperuser`) still gets a (all-`False`) row instead of
+  erroring — real accounts are expected to already have one via the
+  `0022_useraccess_backfill` migration and `create_user_view`/
+  `update_user_view`.
+- `permissions.require_feature(feature)` is the view decorator used
+  throughout `core/views.py` and `reconcile/views.py`: an unauthenticated
+  request is sent to login; an authenticated-but-unauthorized request gets
+  a flash message and is redirected to the **Dashboard** specifically —
+  deliberately a page that is never itself feature-gated, so a denied user
+  can't land in a redirect loop by being bounced to another gated page.
+- `permissions.user_feature_flags(user)` returns the whole
+  `{feature: bool}` dict in one call — used by the nav bar and the Extra
+  page to decide which links/tabs to even render.
+- `MailSignature` (§3) is deliberately **not** in `FEATURES` — every
+  logged-in user manages their own signature regardless of role.
+
+The **Make user** tab (superuser-only, since it can hand out
+`is_staff`/`is_superuser`/any `UserAccess` flag to a brand-new account)
+is where these `UserAccess` checkboxes are actually set, alongside the
+standard Django `is_active`/`is_staff`/`is_superuser` flags
+(`CreateUserForm`/`UpdateUserForm` in `core/forms.py`). Django's own admin
+site (`/admin/`) has a customized `UserAdmin` (`core/admin.py`) that
+strips the **Groups** / **User permissions** fields from the change form
+— this project doesn't use Django's own group/permission system anywhere,
+so exposing that editor (there or on the Make-user tab) would just invite
+confusion.
 
 `BankAccount` lookups (`core/services.py::_bank_accounts()`) are cached
 per-process via `lru_cache`, invalidated by a `post_save`/`post_delete`
@@ -590,10 +756,167 @@ immediately, no restart needed.
 
 ---
 
-## 12. Known limitations / operational notes
+## 12. `core.switch_db` — read-only "Fetch from DB" + General report
 
+`core/switch_db.py` is a connector to the switch's **own** production
+Postgres database — deliberately **not** registered as a Django
+`DATABASES` alias, so `manage.py migrate`/`test` can never touch a schema
+this project doesn't own. Configuration comes from `SWITCH_DB_*` in
+`.env` (`settings.SWITCH_DB`).
+
+- **`_connect()`** opens a plain `psycopg` connection and immediately sets
+  `conn.read_only = True` — a Postgres session-level `READ ONLY`
+  transaction, so any write is rejected by Postgres itself, not just
+  omitted by convention. This module issues exactly one query (`_QUERY`,
+  a single `SELECT` joining `transaction_entry` against
+  `member_configuration`/`bank_details`/`transaction_payment_status`/
+  `transaction_status`); there is no write path into the switch DB
+  anywhere in this codebase.
+- **`fetch_transactions(start, end)`** runs that query for a `[start,
+  end)` naive-datetime window and returns rows shaped like an uploaded
+  `ibft-transaction` export (same keys as `core.services.REQUIRED_COLUMNS`),
+  including synthesizing **Network Reference Id** from the row's own
+  `transaction_id` (base36-encoded, zero-padded to 12 chars — the switch
+  schema has no stored column for this).
+- **`build_transactions_workbook(rows)`** turns those rows into an
+  in-memory `.xlsx` in the same shape a manual export would have been —
+  id-like columns forced to text at write time (column-level
+  `number_format = "@"` rather than per-cell, for performance — see the
+  docstring's ~29k-row timing note) — so every downstream step (reversal
+  generation, reconciliation) runs completely unchanged whether the file
+  came from an upload or a DB fetch.
+- **`date_window(from_date, to_date, as_of=None)`** builds that
+  `[start, end)` pair: a `to_date` before today is pulled through its own
+  full midnight-to-midnight; a `to_date` that includes today is capped at
+  "right now" so a same-day fetch only sees what's actually posted so
+  far. `transaction_entry.created` is stored as a **naive** timestamp
+  holding Asia/Kathmandu wall-clock time (confirmed against production,
+  not assumed), so this compares naive-to-naive throughout.
+- **`fetch_ibft_export(from_date, to_date, as_of=None)`** is the
+  high-level entry point both `core/views.py::upload_view` and
+  `reconcile/views.py::reconcile_view` call for their `mode="db_fetch"`
+  path (`DbFetchForm` in `core/forms.py`) — raises `SwitchDBError` (shown
+  as a normal in-page error, same as a bad upload) if the window has zero
+  transactions, rather than producing an empty file.
+
+**`core/general_report.py::compute_general_report(rows)`** is a separate
+consumer of `fetch_transactions()` — not tied to any `ProcessingLog`/
+`ReconcileRun` at all — behind the Dashboard's **"General" tab**
+(`general_report_view`, `/dashboard/general/`). It reuses the exact same
+classification helpers the rest of the app already applies to file-based
+rows (`core.services.is_on_us`, `normalize_failure_reason`,
+`reconcile.engine.bucket_key_for_amount`) so its numbers agree with the
+file-based dashboards whenever both cover the same period — only the data
+source differs. A row counts as "success" purely by `Overall Status ==
+SUCCESS`; everything else counts as "failed" (including `REVERSAL` — a
+transaction later reversed is not a successful one for this report), with
+any other status still landing in a separate `other` bucket rather than
+being silently dropped, so `total_count` always matches a plain
+`SELECT COUNT(*)` for the window. Output feeds both the on-screen General
+tab and its own family of Excel exports (`export_general_*_view`).
+
+---
+
+## 13. `core.scheduler` — background alert & report jobs
+
+`core/scheduler.py` runs two jobs via `apscheduler.schedulers.background.BackgroundScheduler`,
+started once per real server process from `core/apps.py::CoreConfig.ready()`
+(§ below) — chosen over an OS cron job specifically because (a) the
+Explore page's Start/Stop toggle needs to control these jobs from inside
+the web app itself, without shelling out to an OS scheduler, and (b) this
+runs on Windows, which has no cron at all.
+
+- **`check_dispute_timeouts()`** — registered as an `interval` job, every
+  1 minute (`max_instances=1`, `coalesce=True`, `misfire_grace_time=30`).
+  Queries `switch_db.fetch_transactions()` for the window since the last
+  check (widened by a 5-minute lookback buffer, since a transaction's
+  `transaction_entry` row can exist before its
+  `transaction_payment_status` is written — the buffer re-sees it on the
+  next check; `AlertedTimeoutTransaction`, not the window, is what
+  actually stops a duplicate alert), filters to `Overall Status ==
+  TIMEOUT`, and — for any not already in the `AlertedTimeoutTransaction`
+  dedup ledger — emails a summary (grouped by Aggregator / Payment
+  Processor, as an HTML table) to that job's active
+  `ScheduledReportRecipient` rows. The ledger is only written **after** a
+  successful send, so a failed send leaves those ids un-alerted for the
+  next check to retry, rather than silently swallowing them. Independent
+  of the email step, a `DisputeNotificationEvent(count=len(new_timeouts))`
+  row is created for every batch of new timeouts found regardless of
+  whether the email send succeeds or even has recipients configured —
+  that's what the Extra page's "Desktop alerts" checkbox (§6) polls.
+- **`send_daily_report()`** — registered as a `cron` job, daily at 09:00
+  server-local time (`misfire_grace_time=300`). Pulls the previous day's
+  full window via `switch_db.fetch_transactions()` +
+  `general_report.compute_general_report()`, and emails the same
+  Issuer-wise/Acquirer-wise/Aggregator-wise breakdown + totals the
+  Dashboard's General tab shows, with the same workbook
+  (`core.views._build_general_report_workbook`) attached as `.xlsx`.
+- Both jobs check their own `SchedulerJobState.is_enabled` at the top and
+  return immediately if off — the scheduler itself always ticks once
+  started; it's this per-job DB flag, not actually starting/stopping the
+  APScheduler job, that makes the Extra page's Start/Stop toggle work
+  correctly no matter how many worker processes are serving the app (each
+  process's own `BackgroundScheduler` ticks, but only does real work when
+  the shared flag says to).
+- Both jobs share `_attach_signature_image()` /
+  `resolve_mail_signature()` / `build_signature_blocks()` with the
+  Verification format "Send mail" feature (§6) — same inline sct-signature
+  banner, same per-user-signature resolution logic, `user=None` since a
+  scheduled job has no logged-in user of its own.
+
+**`core/apps.py::CoreConfig.ready()`** calls `scheduler.start_scheduler()`
+guarded by `_should_start_scheduler()`: skipped entirely for one-shot
+`manage.py` commands (`migrate`, `test`, `shell`, `collectstatic`, etc. —
+`ready()` runs for *every* invocation, not just "serving the app", and
+those commands shouldn't open a switch-DB connection or start emailing);
+under `runserver`'s autoreloader, only the reloaded child process
+(`RUN_MAIN=true`) starts it, not the parent watcher, so it doesn't start
+twice. Production (gunicorn/waitress serving `wsgi.py` directly, no
+`manage.py` argv at all) always starts it. `start_scheduler()` itself is
+also idempotent (a module-level `_scheduler` guard) as a second layer of
+protection against double-starting within one process.
+
+**Shutdown behavior / why the dev server could seem to hang on Ctrl+C:**
+APScheduler's `BackgroundScheduler` runs jobs in a plain
+`concurrent.futures.ThreadPoolExecutor`. That executor's own `atexit`
+hook (standard-library behavior, not something this project configures)
+blocks interpreter shutdown until every worker thread finishes — Ctrl+C
+only raises `KeyboardInterrupt` on the *main* thread, so a job stuck
+inside a blocking network call keeps the whole process alive regardless
+of how many times it's pressed. Two mitigations are in place:
+- `EMAIL_TIMEOUT = 15` in `settings.py` bounds `email.send()` (Django's
+  SMTP backend otherwise defaults to no socket timeout at all) so a slow/
+  unreachable mail server fails fast instead of hanging indefinitely.
+- `start_scheduler()` registers `atexit.register(lambda: scheduler.shutdown(wait=False))`
+  so the scheduler itself stops dispatching new job runs immediately on
+  shutdown instead of waiting for its next tick. This does **not**
+  forcibly cancel a job already mid-run (Python cannot kill a thread) —
+  it only prevents a *new* one from starting during shutdown.
+- Net effect: worst case on Ctrl+C is now bounded by `EMAIL_TIMEOUT`
+  (~15-20s), not unbounded. `switch_db.py`'s own DB connection already
+  had a 10s `connect_timeout`, so that side wasn't the risk.
+
+---
+
+## 14. Known limitations / operational notes
+
+- **Scheduler jobs can double-send under multiple worker processes.**
+  `CoreConfig.ready()` starts one `BackgroundScheduler` per real server
+  process (§13) — fine for a single `runserver`/single-worker deployment,
+  but if the app is ever served by more than one gunicorn/waitress worker
+  process, each process starts its own scheduler, and both would tick the
+  same "every minute" / "09:00" jobs independently. `SchedulerJobState`
+  only gates *whether* a job does work, not mutual exclusion between
+  processes, so two workers can both see the same not-yet-alerted
+  transactions and both send before either commits its
+  `AlertedTimeoutTransaction` write — a real (if narrow) duplicate-email
+  window. Not an issue at the current single-worker deployment; worth a
+  proper lock (e.g. a DB-level advisory lock or a "claim this tick" row)
+  before scaling to multiple workers.
 - **No automated test suite.** `core/` has no `tests.py` at all;
-  `reconcile/tests.py` is empty Django boilerplate. All verification of
+  `reconcile/tests.py` is empty Django boilerplate — this also covers the
+  newer `switch_db.py`/`scheduler.py`/`general_report.py`/`permissions.py`
+  modules, none of which have dedicated tests either. All verification of
   the reconciliation logic in this codebase to date has been done via
   targeted manual scripts exercising the real functions against
   constructed and real bank-statement data (see conversation history /
