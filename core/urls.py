@@ -52,6 +52,12 @@ urlpatterns = [
         name="delete_scheduled_recipient",
     ),
     path("bank-statement/scheduler/toggle/<str:job_key>/", views.scheduler_toggle_view, name="scheduler_toggle"),
+    path(
+        "notifications/toggle-desktop/",
+        views.toggle_desktop_notifications_view,
+        name="toggle_desktop_notifications",
+    ),
+    path("notifications/poll/", views.poll_dispute_notifications_view, name="poll_dispute_notifications"),
     path("bank-statement/create-user/", views.create_user_view, name="create_user"),
     path("bank-statement/delete-user/<int:user_id>/", views.delete_user_view, name="delete_user"),
     path("bank-statement/update-user/<int:user_id>/", views.update_user_view, name="update_user"),

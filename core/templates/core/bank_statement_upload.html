@@ -1,10 +1,12 @@
 {% extends "core/base.html" %}
 {% load core_extras %}
+{% block main_class %}wide{% endblock %}
 {% block content %}
 <div class="card extra-page-card">
     <h2>Extra</h2>
 
-    <div class="extra-tabs">
+    <div class="extra-layout">
+    <nav class="extra-sidebar">
         {% if feat_can_check_statements %}
         <button type="button" class="extra-tab-btn" data-extra-tab="check" onclick="showExtraTab('check')">Check bank statement</button>
         {% endif %}
@@ -26,7 +28,8 @@
         {% if mail_signature_form %}
         <button type="button" class="extra-tab-btn" data-extra-tab="mailsignature" onclick="showExtraTab('mailsignature')">Mail signature</button>
         {% endif %}
-    </div>
+    </nav>
+    <div class="extra-content">
 
     {% if feat_can_check_statements %}
     <div id="extra-tab-check" style="display:none;">
@@ -71,9 +74,7 @@
     {% if bank_form %}
     <div id="extra-tab-addbank" style="display:none;">
         <div class="info-box">
-            Add a new <strong>Debtor Bank &rarr; Debit Account</strong> mapping — used to fill in the
-            "Debit Account Number" column on reversal rows, and (when "Is own bank" is ticked) to decide
-            On-Us determination.
+            Add a new <strong>Debtor Bank &rarr; Debit Account</strong> mapping
         </div>
 
         <form method="post" action="{% url 'core:add_bank_account' %}" id="add-bank-form">
@@ -135,6 +136,9 @@
 
     {% if create_user_form %}
     <div id="extra-tab-createuser" style="display:none;">
+        <div class="info-box">
+            <strong>Make New Users</strong>
+        </div>
         <form method="post" action="{% url 'core:create_user' %}" id="create-user-form">
             {% csrf_token %}
             <div class="field-row">
@@ -464,6 +468,15 @@
             </form>
         </div>
 
+        <div class="checkbox-row" style="margin-top:10px; margin-bottom:0;">
+            <label class="checkbox-field" for="desktop-notif-checkbox">
+                <input type="checkbox" id="desktop-notif-checkbox" {% if desktop_notifications_enabled %}checked{% endif %}>
+                Desktop alerts
+            </label>
+        </div>
+        <form id="notif-csrf-form" style="display:none;">{% csrf_token %}</form>
+
+
         <form method="post" action="{% url 'core:add_scheduled_recipient' 'dispute_alert' %}" id="add-dispute-recipient-form" style="margin-top:14px;">
             {% csrf_token %}
             <div class="field-row">
@@ -647,6 +660,9 @@
 
     {% if mail_signature_form %}
     <div id="extra-tab-mailsignature" style="display:none;">
+        <div class="info-box">
+                <strong>Make Your Mail Signature</strong>
+        </div>
         <form method="post" action="{% url 'core:add_mail_signature' %}" id="add-mail-signature-form">
             {% csrf_token %}
             <div class="field-row">
@@ -727,6 +743,8 @@
 
         {% for sig in mail_signatures %}
         <div id="edit-mail-signature-modal-{{ sig.id }}" class="download-modal-overlay" style="display:none;">
+            
+            
             <div class="download-modal" style="text-align:left;">
                 <h3>Edit mail signature</h3>
                 <form method="post" action="{% url 'core:update_mail_signature' sig.id %}">
@@ -772,6 +790,9 @@
         {% endif %}
     </div>
     {% endif %}
+
+    </div>
+    </div>
 </div>
 
 {% if verification_result %}
@@ -815,7 +836,14 @@
    and tables into a tiny internal scroll box on any screen shorter/
    narrower than a full desktop window, which is exactly what made this
    page feel cramped and broken on mobile. */
-.extra-page-card { max-width: 720px; margin: 0 auto; }
+.extra-page-card { max-width: 1120px; margin: 0 auto; }
+.extra-layout { display: flex; align-items: flex-start; gap: 28px; }
+.extra-sidebar {
+    flex: 0 0 200px; display: flex; flex-direction: column; gap: 2px;
+    position: sticky; top: 84px;
+    padding-right: 20px; border-right: 1px solid var(--border);
+}
+.extra-content { flex: 1 1 auto; min-width: 0; padding-left: 4px; }
 
 .field-row {
     display: grid;
@@ -853,22 +881,40 @@
 .email-chip-typer {
     flex:1 1 140px; min-width:140px; border:none; outline:none; font-size:13.5px; padding:4px 2px;
 }
-.extra-tabs {
-    display:flex; gap:4px; margin-bottom:16px; border-bottom:1px solid #e5e7eb;
-    overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
-    scrollbar-width:thin;
-}
 .extra-tab-btn {
-    flex:0 0 auto; white-space:nowrap;
-    background:none; border:none; cursor:pointer; padding:8px 14px;
-    font-size:14px; font-weight:600; color:#6b7280; border-bottom:2px solid transparent;
-    transition: color 0.15s ease, border-color 0.15s ease;
+    display:block; width:100%; text-align:left;
+    background:none; border:none; border-left:3px solid transparent; cursor:pointer;
+    padding:10px 14px; border-radius:0 8px 8px 0;
+    font-size:14px; font-weight:600; color:#6b7280;
+    transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
 }
-.extra-tab-btn:hover { color:#1D4ED8; }
-.extra-tab-btn.active { color:#1D4ED8; border-bottom-color:#1D4ED8; }
+.extra-tab-btn:hover { color:#1D4ED8; background:#f4f7fc; }
+.extra-tab-btn.active { color:#1D4ED8; border-left-color:#1D4ED8; background:var(--accent-soft); }
 .verify-header-row { display:flex; flex-wrap:wrap; align-items:flex-start; gap:8px; }
-@media (max-width: 480px) {
-    .extra-tab-btn { padding:8px 10px; font-size:13px; }
+@media (max-width: 780px) {
+    /* Below desktop width the sidebar becomes a wrapping row of small pill
+       buttons instead of a scroll-sideways strip — with `width:100%` still
+       inherited from the desktop rule above, `flex-direction:row` would
+       otherwise stretch every button to the container's full width (flex
+       resolves flex-basis:auto to that width), leaving only the first tab
+       visible and a giant horizontal scrollbar to reach the rest. */
+    .extra-layout { flex-direction: column; gap: 0; }
+    .extra-sidebar {
+        flex-direction: row; flex-wrap: wrap; width: 100%; gap:5px 6px;
+        margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid #e5e7eb;
+        position: static; padding-right: 0; border-right: none;
+    }
+    .extra-content { padding-left: 0; }
+    .extra-tab-btn {
+        display:inline-block; width:auto; flex:0 0 auto; white-space:nowrap;
+        border-left:none; border:1px solid var(--border); border-radius:10px;
+        padding:4px 9px; font-size:11.5px; font-weight:600; line-height:1.5; background:#f4f7fc;
+    }
+    .extra-tab-btn:hover { background:var(--accent-soft); }
+    .extra-tab-btn.active { border-color:#1D4ED8; background:var(--accent-soft); }
+}
+@media (max-width: 420px) {
+    .extra-tab-btn { padding:4px 8px; font-size:11px; }
 }
 .download-modal-overlay {
     position:fixed; inset:0; background:rgba(15,23,42,0.55);
@@ -968,6 +1014,99 @@ function showExtraTab(tab) {
         btn.classList.toggle('active', btn.getAttribute('data-extra-tab') === tab);
     });
 }
+
+(function () {
+    // "Desktop alerts" checkbox, Scheduler tab — pops a browser Notification
+    // and reads it aloud (Web Speech TTS) when a new dispute/timeout shows
+    // up. Only works while this page stays open (background tab is fine,
+    // closed is not) — see core.views.poll_dispute_notifications_view.
+    var checkbox = document.getElementById('desktop-notif-checkbox');
+    var csrfForm = document.getElementById('notif-csrf-form');
+    if (!checkbox || !csrfForm) return;
+    var csrfToken = csrfForm.querySelector('[name=csrfmiddlewaretoken]').value;
+    var storageKey = 'disputeNotifLastId_{{ user.username|escapejs }}';
+    var pollTimer = null;
+
+    function setServerPreference(enabled) {
+        var body = new URLSearchParams();
+        body.set('csrfmiddlewaretoken', csrfToken);
+        body.set('enabled', enabled ? '1' : '0');
+        fetch('{% url "core:toggle_desktop_notifications" %}', {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            body: body,
+        });
+    }
+
+    var SPEAK_REPEAT_COUNT = 2;
+
+    function speak(text) {
+        if (!('speechSynthesis' in window)) return;
+        try {
+            // speechSynthesis.speak() queues utterances rather than overlapping
+            // them, so queuing it N times says the same line N times in a row.
+            for (var i = 0; i < SPEAK_REPEAT_COUNT; i++) {
+                window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+            }
+        } catch (e) { /* TTS unusable in this browser — the Notification popup below still fires */ }
+    }
+
+    function notify(count) {
+        var text = 'Hey, you got ' + count + ' new dispute' + (count === 1 ? '' : 's') + '.';
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            new Notification('Dispute alert', { body: text });
+        }
+        speak(text);
+    }
+
+    function poll(afterId) {
+        var url = '{% url "core:poll_dispute_notifications" %}';
+        if (afterId !== null && afterId !== undefined) { url += '?after_id=' + afterId; }
+        fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (resp) { return resp.json(); })
+            .then(function (data) {
+                localStorage.setItem(storageKey, data.latest_id);
+                if (data.new_count > 0) { notify(data.new_count); }
+            })
+            .catch(function () { /* network hiccup — the next tick retries */ });
+    }
+
+    function startPolling() {
+        if (pollTimer) return;
+        // No stored id yet: sync the cursor to "now" first so a first-ever
+        // enable doesn't immediately alert for every dispute already on record.
+        poll(localStorage.getItem(storageKey));
+        pollTimer = setInterval(function () { poll(localStorage.getItem(storageKey) || 0); }, 25000);
+    }
+
+    function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    if (checkbox.checked) { startPolling(); }
+
+    checkbox.addEventListener('change', function () {
+        if (checkbox.checked) {
+            if (typeof Notification === 'undefined') {
+                alert('This browser does not support desktop notifications.');
+                checkbox.checked = false;
+                return;
+            }
+            Notification.requestPermission().then(function (permission) {
+                if (permission === 'granted') {
+                    setServerPreference(true);
+                    startPolling();
+                } else {
+                    alert('Desktop notifications are blocked for this site — allow them in the browser to turn this on.');
+                    checkbox.checked = false;
+                }
+            });
+        } else {
+            setServerPreference(false);
+            stopPolling();
+        }
+    });
+})();
 
 function closeDownloadModal() {
     var overlay = document.getElementById('download-modal-overlay');

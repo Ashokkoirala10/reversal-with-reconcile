@@ -92,7 +92,7 @@ _DISPUTE_LOOKBACK_BUFFER_MINUTES = 5
 
 
 def check_dispute_timeouts() -> None:
-    from .models import AlertedTimeoutTransaction, ScheduledReportRecipient, SchedulerJobState
+    from .models import AlertedTimeoutTransaction, DisputeNotificationEvent, ScheduledReportRecipient, SchedulerJobState
 
     state = _get_job_state(SchedulerJobState.JOB_DISPUTE_ALERT)
     if not state.is_enabled:
@@ -133,6 +133,11 @@ def check_dispute_timeouts() -> None:
         state.last_result = f"{len(timeouts)} timeout(s) seen, already alerted"
         state.save(update_fields=["last_checked_at", "last_run_at", "last_result"])
         return
+
+    # Independent of the email recipient list below — this is what the
+    # nav bar's desktop-notification poll (core.views.poll_dispute_notifications_view)
+    # reads, so an in-browser alert still fires even with no recipients configured.
+    DisputeNotificationEvent.objects.create(count=len(new_timeouts))
 
     groups: dict[tuple[str, str], list[str]] = defaultdict(list)
     for r in new_timeouts:
@@ -329,6 +334,8 @@ def start_scheduler() -> None:
     if _scheduler is not None:
         return
 
+    import atexit
+
     from apscheduler.schedulers.background import BackgroundScheduler
     from django.conf import settings
 
@@ -343,4 +350,11 @@ def start_scheduler() -> None:
     )
     scheduler.start()
     _scheduler = scheduler
+    # wait=False: stop scheduling new job runs immediately on interpreter
+    # shutdown (Ctrl+C, runserver reload, etc.) instead of waiting for the
+    # next tick. It does NOT forcibly cancel a job already mid-run — Python
+    # can't kill a thread — so a hung network call (e.g. an unresponsive
+    # SMTP server) can still delay exit; see EMAIL_TIMEOUT in settings.py,
+    # which bounds that instead.
+    atexit.register(lambda: scheduler.shutdown(wait=False))
     logger.info("Background scheduler started (dispute check every 1 min, daily report at 09:00 %s)", settings.TIME_ZONE)

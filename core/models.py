@@ -572,6 +572,43 @@ class AlertedTimeoutTransaction(models.Model):
         return self.network_reference_id
 
 
+class UserNotificationPreference(models.Model):
+    """Per-user opt-in for the in-browser dispute alert (desktop
+    Notification + spoken TTS, see the "Desktop alerts" checkbox on the
+    Extra page's Scheduler tab and core.views.poll_dispute_notifications_view).
+    Self-managed like MailSignature — any logged-in user flips their own,
+    no admin gate."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="notification_preference",
+    )
+    desktop_notifications_enabled = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Notification pref ({self.user.username}): {'on' if self.desktop_notifications_enabled else 'off'}"
+
+
+class DisputeNotificationEvent(models.Model):
+    """One row per core.scheduler.check_dispute_timeouts() run that found
+    new timeouts — just a count + timestamp, so the browser (the
+    Scheduler tab's "Desktop alerts" checkbox) can poll for "any new
+    disputes since the last id I saw" and fire an in-page
+    Notification/TTS alert independently of whether the email alert had
+    any recipients configured."""
+
+    count = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]
+
+    def __str__(self):
+        return f"{self.count} new dispute(s) at {self.created_at:%Y-%m-%d %H:%M}"
+
+
 def _clear_bank_account_cache(**kwargs):
     # Lazy import: services.py has no top-level dependency on models.py, and
     # this keeps it that way — only reached once Django has fully loaded.

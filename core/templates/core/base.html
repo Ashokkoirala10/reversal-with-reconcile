@@ -5,7 +5,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}IBFT Reversal Generator{% endblock %}</title>
-<link rel="stylesheet" href="{% static 'core/css/style.css' %}?v=8">
+<link rel="stylesheet" href="{% static 'core/css/style.css' %}?v=11">
 </head>
 <body>
 <header>
@@ -70,5 +70,16 @@
     {% endif %}
     {% block content %}{% endblock %}
 </main>
+<footer class="site-footer">
+    <div class="site-footer-inner">
+        <span class="site-footer-brand">
+
+            <span>&copy; {% now "Y" %} <strong>Smart Choice Technologies</strong>. All rights reserved.</span>
+        </span>
+        <span class="site-footer-credit">
+            Crafted with <span class="site-footer-heart">&#10084;&#65039;</span> by the <span class="site-footer-shimmer">TechOps Team</span>
+        </span>
+    </div>
+</footer>
 </body>
 </html>

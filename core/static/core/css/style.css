@@ -16,13 +16,16 @@
         --teal-soft: #f0fdfa;
     }
     * { box-sizing: border-box; }
-    html { -webkit-text-size-adjust: 100%; }
+    html { -webkit-text-size-adjust: 100%; height: 100%; }
     body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         background: var(--bg);
         color: var(--text);
         margin: 0;
         padding: 0;
+        min-height: 100%;
+        display: flex;
+        flex-direction: column;
     }
     header {
         background: linear-gradient(120deg, var(--primary-dark), var(--primary));
@@ -109,6 +112,8 @@
         max-width: 960px;
         margin: 28px auto;
         padding: 0 20px 60px;
+        flex: 1 0 auto;
+        width: 100%;
     }
     main.wide { max-width: 1360px; }
     .split {
@@ -1066,3 +1071,82 @@
 }
 .source-toggle-btn:hover { color: var(--primary-dark); }
 .source-toggle-btn.is-active { background: var(--primary); color: white; }
+
+/* Site footer — shown on every page (see core/templates/core/base.html).
+   body/html/main above are set up as a flex column with main:flex:1 0 auto
+   specifically so this sits pinned to the bottom of short pages instead of
+   floating up under a half-empty viewport, while still flowing normally
+   after tall page content. */
+.site-footer {
+    flex-shrink: 0;
+    margin-top: 32px;
+    padding: 20px 32px 24px;
+    background: linear-gradient(120deg, var(--primary-dark), var(--primary));
+    color: rgba(255, 255, 255, 0.92);
+    animation: footer-rise 0.6s ease-out both;
+}
+.site-footer-inner {
+    max-width: 1360px;
+    margin: 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 24px;
+}
+.site-footer-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+}
+.site-footer-logo {
+    height: 20px;
+    width: auto;
+    background: white;
+    border-radius: 5px;
+    padding: 2px 5px;
+    display: block;
+}
+.site-footer-credit {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.site-footer-heart {
+    display: inline-block;
+    color: #fda4af;
+    animation: footer-heartbeat 1.6s ease-in-out infinite;
+}
+.site-footer-shimmer {
+    background: linear-gradient(90deg, var(--yellow), #ffffff, #93c5fd, var(--yellow));
+    background-size: 300% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: footer-shimmer 4s linear infinite;
+}
+@keyframes footer-shimmer {
+    0% { background-position: 0% 50%; }
+    100% { background-position: 300% 50%; }
+}
+@keyframes footer-heartbeat {
+    0%, 100% { transform: scale(1); }
+    25% { transform: scale(1.3); }
+    40% { transform: scale(1); }
+    60% { transform: scale(1.22); }
+    80% { transform: scale(1); }
+}
+@keyframes footer-rise {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .site-footer, .site-footer-heart, .site-footer-shimmer { animation: none; }
+}
+@media (max-width: 600px) {
+    .site-footer-inner { flex-direction: column; text-align: center; justify-content: center; }
+}

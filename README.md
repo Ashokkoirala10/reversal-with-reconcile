@@ -14,6 +14,15 @@ login system and one "passed" review workflow:
   reversal file needed — everything is derived from the transaction file
   itself.
 
+Both apps can also skip the manual upload step entirely and **pull the
+day's transactions straight from the switch's own database** for any date
+range (see [Fetching data straight from the switch
+DB](#fetching-data-straight-from-the-switch-db)). On top of the two apps,
+a shared background **scheduler** (see
+[Scheduler](#scheduler-automated-alerts--reports)) watches for dispute/
+timeout transactions every minute and emails the previous day's report
+every morning — no manual "check and forward" step needed for either.
+
 For the deep-dive on exactly how each app's business rules and data models
 work internally, see [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md).
 This file is the practical "what does it do and how do I run it" version.
@@ -34,6 +43,14 @@ http://127.0.0.1:8000/reconcile/ for Reconcile — same login for both. As
 `admin`, check http://127.0.0.1:8000/dashboard/ and
 http://127.0.0.1:8000/audit-log/ (each page embeds both apps' sections).
 
+To use **"Fetch from DB"** or the **General** dashboard tab (both read
+straight from the switch's own database — see
+[Fetching data straight from the switch DB](#fetching-data-straight-from-the-switch-db)),
+also set `SWITCH_DB_HOST` / `SWITCH_DB_PORT` / `SWITCH_DB_NAME` /
+`SWITCH_DB_USER` / `SWITCH_DB_PASSWORD` in `.env`. Without these, every
+other feature works fine — only DB-fetch and the General tab show a clear
+"not configured" error instead of a crash.
+
 ## Login
 
 There is no self-registration — two hardcoded accounts are seeded by a data
@@ -47,6 +64,16 @@ migration (`core/migrations/0003_seed_users.py`), shared by both apps:
 Change these passwords (via `/admin/` or the Django shell) before using this
 anywhere beyond your own machine — they're intentionally simple/hardcoded
 per the current requirements.
+
+Beyond these two seeded accounts, an admin (`is_superuser`) can create as
+many additional logins as needed from the **Extra page's "Make user" tab**,
+each with **per-feature access control** — a checkbox per module (Reversal,
+Reconcile, Verification format, Check statements, Audit log, Bank contacts,
+Issuer bank accounts, Make users, Scheduler), not just a blanket
+admin/regular split. A superuser always has every feature regardless of
+these checkboxes; anyone else only sees/can-use the modules ticked for
+them. Every user manages their own email signature (see the Verification
+format tab) no matter their role.
 
 ## Passed workflow (review before it's shared)
 
@@ -64,6 +91,87 @@ table). Once passed:
 
 Anyone can unmark their own passed report; admins can mark/unmark anyone's.
 
+## Fetching data straight from the switch DB
+
+Both the Reversal upload page and the Reconcile upload page offer a second
+mode alongside "Upload a file": **"Fetch from DB"** — pick a From/To date
+and the app pulls the matching transactions directly out of the switch's
+own production database (`core/switch_db.py`), builds the same
+`ibft-transaction_*.xlsx`-shaped workbook a manual export would have been,
+and runs the normal reversal/reconcile flow against it. No separate
+download-then-upload step needed for a routine day.
+
+That connection is **read-only at the database session level**, not just
+by convention — the switch DB isn't a Django `DATABASES` alias, and every
+connection is explicitly flipped into a Postgres `READ ONLY` transaction
+before any query runs, so a write is rejected by Postgres itself if one is
+ever attempted. This same connector also powers the **"General" dashboard
+tab** (`/dashboard/general/`) — live Member/Aggregator/Issuer/Acquirer/
+amount-bucket analytics for any date range, computed straight from the
+switch DB independent of whether anyone has uploaded or fetched a file for
+that period at all — and both scheduled jobs described next.
+
+Connection details come from `SWITCH_DB_*` in `.env` (see
+`reversal_project/settings.py`); the feature is unavailable (with a clear
+error, not a crash) until those are set.
+
+## Scheduler (automated alerts & reports)
+
+A background scheduler (`core/scheduler.py`, using APScheduler in-process
+rather than an OS cron job — this needs to be toggleable from inside the
+web app itself, and to work on Windows, which has no cron) runs two jobs:
+
+- **Dispute/timeout alert** — every minute, checks the switch DB for
+  transactions that newly show `Overall Status = TIMEOUT` and emails a
+  summary (grouped by Aggregator / Payment Processor) to configured
+  recipients. A dedup ledger guarantees the same transaction is never
+  alerted twice, even though each check's window intentionally overlaps
+  the previous one.
+- **Daily transaction report** — every day at 09:00, emails the previous
+  day's Issuer-wise / Acquirer-wise / Aggregator-wise breakdown (same
+  numbers as the Dashboard's General tab export), as an Excel attachment
+  — an automated management/CEO-level report with no manual step.
+
+Both jobs are managed from the **Extra page's "Scheduler" tab**: turn
+either on/off, and manage who receives each one (comma-separated To/Cc per
+recipient group, multiple groups merged into one send). Only users with
+the `can_scheduler` permission (or a superuser) can see this tab.
+
+Next to the dispute/timeout alert's Start/Stop row is a **"Desktop
+alerts"** checkbox — any logged-in user can turn this on for themselves.
+While it's on and this tab is open (even minimized/backgrounded — it
+just can't be fully closed), a new dispute/timeout pops a browser
+notification and reads it aloud, independent of whether anyone's
+configured to receive the email above.
+
+## Extra page (operational utilities)
+
+A single tabbed page (`/bank-statement/`) hosts everything that isn't
+"upload a file and get a result" — each tab only visible to users with the
+matching permission (see [Login](#login) above):
+
+- **Check bank statement** — the double-reversal / already-credited
+  cross-check described under [Bank statement upload](#bank-statement-upload-multiple-files)
+  below.
+- **Add bank account** — add a Debtor-Bank → Debit-Account mapping
+  (`BankAccount`) so a new bank's reversal rows get the right account
+  without a code change.
+- **Verification format** — upload a dispute-transaction export and
+  convert it (entirely in memory — nothing is saved unless you click
+  download) into the bank's required 13-column verification format. Rows
+  are grouped by Creditor Bank, and any group matching a configured **bank
+  contact** gets a one-click **"Send mail"** button that emails that
+  bank's rows straight to the configured To/Cc addresses — replacing what
+  used to be a manual email. Add/edit bank contacts from the same tab.
+- **Mail signature** — every user manages their own signature(s) (name,
+  title, mobile, company, etc.) used to sign outgoing verification and
+  notification emails; the most recently updated active one wins if you
+  keep more than one.
+- **Make user** — create, edit, and delete logins, including the
+  per-feature access checkboxes described in [Login](#login) (superuser-
+  only tab, since it can grant admin rights).
+- **Scheduler** — described above.
+
 ## Project layout
 
 ```
@@ -72,9 +180,16 @@ reversal_project/
 ├── requirements.txt
 ├── reversal_project/        # Django project settings/urls (mounts "/", "reconcile/", "admin/")
 ├── core/                    # the reversal generator app
-│   ├── models.py            # ProcessingLog (audit trail)
-│   ├── forms.py              # upload form
+│   ├── models.py            # ProcessingLog (audit trail), BankAccount,
+│   │                        # VerificationBankContact, MailSignature,
+│   │                        # UserAccess, ScheduledReportRecipient,
+│   │                        # SchedulerJobState, AlertedTimeoutTransaction
+│   ├── forms.py              # upload form (incl. DbFetchForm)
 │   ├── services.py           # <-- all the business logic lives here
+│   ├── switch_db.py          # read-only "Fetch from DB" connector
+│   ├── general_report.py     # live analytics straight from the switch DB
+│   ├── scheduler.py          # dispute/timeout alert + daily report jobs
+│   ├── permissions.py        # per-user feature-gating (UserAccess)
 │   ├── views.py
 │   ├── urls.py
 │   ├── admin.py
@@ -84,7 +199,9 @@ reversal_project/
 │       ├── upload.html
 │       ├── result.html
 │       ├── audit_log.html
-│       └── dashboard.html
+│       ├── dashboard.html
+│       ├── general_report.html
+│       └── bank_statement_upload.html   # tabbed "Extra" utilities page
 └── reconcile/                # the broader reconciliation app
     ├── models.py              # ReconcileRun — one row per reconciliation run
     ├── banks.py                # the 18-bank SCT network registry
@@ -190,6 +307,11 @@ reconciliation popup) instead of being reversed a second time.
   aggregator) and an **Aggregator-wise report** (same, rolled up per
   Aggregator instead) — kept as two independent tables/tabs rather than one
   mixed (Member, Aggregator) table, since they answer different questions.
+  A separate **"General" tab** (`/dashboard/general/`) shows the same kind
+  of Member/Aggregator/Issuer/Acquirer/amount-bucket breakdown but pulled
+  live from the switch database for any date range, independent of
+  whether anyone has uploaded or fetched a file for that period (see
+  [Fetching data straight from the switch DB](#fetching-data-straight-from-the-switch-db)).
 - "Manual reversal" vs. "system reversal": a `REVERSAL` row is a **manual**
   reversal if its Source Message says so (these are the ones written into
   the generated file); any other `REVERSAL` row is a **system** reversal

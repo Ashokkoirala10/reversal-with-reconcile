@@ -121,6 +121,12 @@ _smtp_encryption = os.environ.get("SMTP_ENCRYPTION", "tls").strip().lower()
 EMAIL_USE_TLS = _smtp_encryption == "tls"
 EMAIL_USE_SSL = _smtp_encryption == "ssl"
 DEFAULT_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", EMAIL_HOST_USER)
+# Without this, Django's SMTP backend uses no socket timeout at all — a
+# slow/unreachable mail server can hang a send forever. core.scheduler's
+# every-1-minute dispute check runs email.send() inside an APScheduler
+# worker thread, and Python won't let the process fully exit (even after
+# Ctrl+C) while that thread is still blocked — this bounds the hang.
+EMAIL_TIMEOUT = 15
 
 # Signature block appended to a verification email's body (see
 # core/services.py:build_verification_email). Department/company are

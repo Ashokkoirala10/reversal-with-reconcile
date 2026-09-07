@@ -21,7 +21,7 @@ from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -42,6 +42,7 @@ from .forms import (
 )
 from .models import (
     BankAccount,
+    DisputeNotificationEvent,
     MailSignature,
     MemberAggregatorStat,
     ProcessingLog,
@@ -49,6 +50,7 @@ from .models import (
     SchedulerJobState,
     SeenNetworkReferenceId,
     UserAccess,
+    UserNotificationPreference,
     VerificationBankContact,
 )
 from .permissions import FEATURES, get_user_access, has_feature, require_feature, user_feature_flags
@@ -531,6 +533,11 @@ def _extra_page_context(request):
         daily_state, _ = SchedulerJobState.objects.get_or_create(job_key=SchedulerJobState.JOB_DAILY_REPORT)
         context["dispute_job_state"] = dispute_state
         context["daily_job_state"] = daily_state
+        # "Desktop alerts" checkbox next to the dispute/timeout alert
+        # status row — in-browser Notification + spoken TTS, see
+        # toggle_desktop_notifications_view / poll_dispute_notifications_view.
+        notif_pref = getattr(request.user, "notification_preference", None)
+        context["desktop_notifications_enabled"] = bool(notif_pref and notif_pref.desktop_notifications_enabled)
     return context
 
 
@@ -691,6 +698,50 @@ def scheduler_toggle_view(request, job_key):
     else:
         messages.error(request, "Unknown action.")
     return redirect(f"{reverse('core:bank_statement_upload')}?tab=scheduler")
+
+
+@login_required
+@require_POST
+def toggle_desktop_notifications_view(request):
+    """"Desktop alerts" checkbox on the Extra page's Scheduler tab — any
+    logged-in user manages their own preference, same self-service model
+    as MailSignature. The browser only ever enables the checkbox
+    client-side after Notification permission was actually granted, so
+    reaching here with enabled=true implies that already happened."""
+    pref, _ = UserNotificationPreference.objects.get_or_create(user=request.user)
+    pref.desktop_notifications_enabled = request.POST.get("enabled") == "1"
+    pref.save(update_fields=["desktop_notifications_enabled", "updated_at"])
+    return JsonResponse({"enabled": pref.desktop_notifications_enabled})
+
+
+@login_required
+@require_GET
+def poll_dispute_notifications_view(request):
+    """Polled every few seconds by the Scheduler tab's "Desktop alerts"
+    checkbox while it's on — keeps working as long as that browser tab
+    stays open (even in the background/minimized), stops once it's
+    closed. `after_id` is the highest DisputeNotificationEvent id the
+    browser has already alerted on (from localStorage); omitted entirely
+    on the very first poll so it can sync its cursor to "now" without
+    firing a notification for disputes that happened before it ever
+    asked."""
+    pref = getattr(request.user, "notification_preference", None)
+    enabled = bool(pref and pref.desktop_notifications_enabled)
+
+    latest = DisputeNotificationEvent.objects.order_by("-id").first()
+    latest_id = latest.id if latest else 0
+
+    after_id = request.GET.get("after_id")
+    if not enabled or after_id is None:
+        return JsonResponse({"enabled": enabled, "new_count": 0, "latest_id": latest_id})
+
+    try:
+        after_id = int(after_id)
+    except ValueError:
+        after_id = latest_id
+
+    new_count = DisputeNotificationEvent.objects.filter(id__gt=after_id).aggregate(total=Sum("count"))["total"] or 0
+    return JsonResponse({"enabled": enabled, "new_count": new_count, "latest_id": latest_id})
 
 
 @login_required
