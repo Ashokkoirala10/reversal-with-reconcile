@@ -11,12 +11,17 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
 # --- Security ---------------------------------------------------------
-# Change this before deploying anywhere outside your own machine.
-SECRET_KEY = "django-insecure-change-me-before-deploying"
+# Env-overridable (see .env.example's DJANGO_* block / docker-compose.yml)
+# so a container can run DEBUG=False with a real secret key without any
+# code change — the literal defaults below are exactly what this app ran
+# with before these existed, so nothing changes for anyone who hasn't set
+# them. Still change SECRET_KEY before deploying anywhere but your own
+# machine.
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "django-insecure-change-me-before-deploying")
 
-DEBUG = True
+DEBUG = os.environ.get("DJANGO_DEBUG", "True").strip().lower() == "true"
 
-ALLOWED_HOSTS = ["*"]
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "*").split(",") if h.strip()]
 
 # --- Applications -------------------------------------------------------
 INSTALLED_APPS = [
@@ -32,6 +37,10 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Serves STATIC_ROOT itself (compressed + far-future cache headers) so
+    # the container doesn't need a separate nginx just for static files —
+    # sits right after SecurityMiddleware per whitenoise's own setup docs.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -62,23 +71,29 @@ TEMPLATES = [
 WSGI_APPLICATION = "reversal_project.wsgi.application"
 
 # --- Database -------------------------------------------------------------
-# Simple sqlite db is enough for the audit log.
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+# Postgres if POSTGRES_DB is set in the environment (this is what
+# docker-compose.yml's "db" service sets — see its POSTGRES_* env block),
+# otherwise the sqlite file this app has always used, so running it bare
+# (no .env Postgres config, e.g. `python manage.py runserver` on a laptop)
+# keeps working exactly as before with zero setup.
+if os.environ.get("POSTGRES_DB"):
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.environ["POSTGRES_DB"],
+            "USER": os.environ.get("POSTGRES_USER", "postgres"),
+            "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
+            "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
+            "PORT": os.environ.get("POSTGRES_PORT", "5432"),
+        }
     }
-}
-# DATABASES = {
-#     "default": {
-#         "ENGINE": "django.db.backends.postgresql",
-#         "NAME": os.environ.get("POSTGRES_DB", "sct_reversal_db"),
-#         "USER": os.environ.get("POSTGRES_USER", "postgres"),
-#         "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
-#         "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
-#         "PORT": os.environ.get("POSTGRES_PORT", "5432"),
+# else:
+#     DATABASES = {
+#         "default": {
+#             "ENGINE": "django.db.backends.sqlite3",
+#             "NAME": BASE_DIR / "db.sqlite3",
+#         }
 #     }
-# }
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -92,6 +107,14 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+# `collectstatic`'s destination — whitenoise (see MIDDLEWARE above) serves
+# straight out of this directory, so the container needs no separate nginx
+# just for CSS/JS/images.
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
 
 # --- Media (uploaded source files + generated reversal files) -------------
 MEDIA_URL = "/media/"

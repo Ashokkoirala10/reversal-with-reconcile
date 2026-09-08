@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sct_reversal_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-sct_reversal_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # .env's POSTGRES_HOST/PORT (localhost:5432) are correct for running
+      # this app directly on a machine with its own Postgres — inside this
+      # compose network Postgres is only reachable at the "db" service
+      # name, so these two override whatever .env has for the app container.
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-*}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      # Uploaded/generated files and the audit log (core.audit.AUDIT_LOG_PATH)
+      # all live under MEDIA_ROOT — see reversal_project/settings.py.
+      - ./media:/app/media
+
+volumes:
+  postgres_data:
