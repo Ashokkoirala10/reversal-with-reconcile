@@ -33,7 +33,7 @@ from django.utils import timezone
 from . import switch_db
 from .services import (
     MAIL_SIGNATURE_IMAGE_CID,
-    build_mail_connection,
+    build_default_mail_connection,
     build_signature_blocks,
     resolve_mail_signature,
 )
@@ -221,7 +221,7 @@ def check_dispute_timeouts() -> None:
         + f"\n\n{sig_text}"
     )
 
-    connection, from_email = build_mail_connection(user=None)
+    connection, from_email = build_default_mail_connection()
     email = EmailMultiAlternatives(
         subject=subject, body=text_body, from_email=from_email, to=to_list, cc=cc_list or None, connection=connection
     )
@@ -350,7 +350,7 @@ def send_daily_report() -> None:
         + f"\n\n{sig_text}"
     )
 
-    connection, from_email = build_mail_connection(user=None)
+    connection, from_email = build_default_mail_connection()
     email = EmailMultiAlternatives(
         subject=subject, body=text_body, from_email=from_email, to=to_list, cc=cc_list or None, connection=connection
     )
