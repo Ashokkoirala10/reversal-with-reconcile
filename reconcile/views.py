@@ -27,6 +27,7 @@ from core.services import (
     MAIL_SIGNATURE_IMAGE_CID,
     ProcessingError,
     build_bank_statement_index,
+    build_mail_connection,
     build_signature_blocks,
     normalize_reference_id,
     resolve_mail_signature,
@@ -356,7 +357,11 @@ def update_issue_view(request, run_id):
                 f"<p>{signature_html}</p>"
             )
             try:
-                email = EmailMultiAlternatives(subject=subject, body=text_body, to=valid_to, cc=valid_cc or None)
+                connection, from_email = build_mail_connection(user=request.user)
+                email = EmailMultiAlternatives(
+                    subject=subject, body=text_body, from_email=from_email,
+                    to=valid_to, cc=valid_cc or None, connection=connection,
+                )
                 email.attach_alternative(html_body, "text/html")
                 signature_path = finders.find("core/img/mail-signature.png")
                 if signature_path:

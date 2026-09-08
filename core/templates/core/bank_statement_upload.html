@@ -22,11 +22,11 @@
         {% if bank_contact_form %}
         <button type="button" class="extra-tab-btn" data-extra-tab="bankcontacts" onclick="showExtraTab('bankcontacts')">Bank contacts</button>
         {% endif %}
-        {% if dispute_recipient_form %}
+        {% if scheduler_tab_visible %}
         <button type="button" class="extra-tab-btn" data-extra-tab="scheduler" onclick="showExtraTab('scheduler')">Scheduler</button>
         {% endif %}
         {% if mail_signature_form %}
-        <button type="button" class="extra-tab-btn" data-extra-tab="mailsignature" onclick="showExtraTab('mailsignature')">Mail signature</button>
+        <button type="button" class="extra-tab-btn" data-extra-tab="mailsignature" onclick="showExtraTab('mailsignature')">Mail settings</button>
         {% endif %}
     </nav>
     <div class="extra-content">
@@ -443,8 +443,9 @@
     </div>
     {% endif %}
 
-    {% if dispute_recipient_form %}
+    {% if scheduler_tab_visible %}
     <div id="extra-tab-scheduler" style="display:none;">
+        {% if dispute_recipient_form %}
         <div class="info-box">
             Two background jobs: a <strong>dispute/timeout alert</strong> and a <strong>daily transaction report</strong>
             sent at 09:00. Each has its own recipient list below.
@@ -467,6 +468,7 @@
                 {% endif %}
             </form>
         </div>
+        {% endif %}
 
         <div class="checkbox-row" style="margin-top:10px; margin-bottom:0;">
             <label class="checkbox-field" for="desktop-notif-checkbox">
@@ -476,7 +478,7 @@
         </div>
         <form id="notif-csrf-form" style="display:none;">{% csrf_token %}</form>
 
-
+        {% if dispute_recipient_form %}
         <form method="post" action="{% url 'core:add_scheduled_recipient' 'dispute_alert' %}" id="add-dispute-recipient-form" style="margin-top:14px;">
             {% csrf_token %}
             <div class="field-row">
@@ -655,11 +657,145 @@
             </div>
         </div>
         {% endfor %}
+        {% endif %}
     </div>
     {% endif %}
 
     {% if mail_signature_form %}
     <div id="extra-tab-mailsignature" style="display:none;">
+        {% if mail_server_form %}
+        <div class="info-box">
+            <strong>Your outgoing mail (SMTP) account</strong>
+        </div>
+        <form method="post" action="{% url 'core:add_mail_server_config' %}" id="add-mail-server-form">
+            {% csrf_token %}
+            <div class="field-row">
+                <div class="field">
+                    <label for="id_label">{{ mail_server_form.label.label }}</label>
+                    {{ mail_server_form.label }}
+                    {% if mail_server_form.label.errors %}<div class="error-box">{{ mail_server_form.label.errors }}</div>{% endif %}
+                </div>
+                <div class="field">
+                    <label for="id_host">{{ mail_server_form.host.label }}</label>
+                    {{ mail_server_form.host }}
+                    {% if mail_server_form.host.errors %}<div class="error-box">{{ mail_server_form.host.errors }}</div>{% endif %}
+                </div>
+            </div>
+            <div class="field-row">
+                <div class="field">
+                    <label for="id_port">{{ mail_server_form.port.label }}</label>
+                    {{ mail_server_form.port }}
+                    {% if mail_server_form.port.errors %}<div class="error-box">{{ mail_server_form.port.errors }}</div>{% endif %}
+                </div>
+                <div class="field">
+                    <label for="id_encryption">{{ mail_server_form.encryption.label }}</label>
+                    {{ mail_server_form.encryption }}
+                </div>
+            </div>
+            <div class="field-row">
+                <div class="field">
+                    <label for="id_username">{{ mail_server_form.username.label }}</label>
+                    {{ mail_server_form.username }}
+                    {% if mail_server_form.username.errors %}<div class="error-box">{{ mail_server_form.username.errors }}</div>{% endif %}
+                </div>
+                <div class="field">
+                    <label for="id_password">{{ mail_server_form.password.label }}</label>
+                    {{ mail_server_form.password }}
+                    {% if mail_server_form.password.errors %}<div class="error-box">{{ mail_server_form.password.errors }}</div>{% endif %}
+                </div>
+            </div>
+            <div class="field">
+                <label for="id_from_email">{{ mail_server_form.from_email.label }}</label>
+                {{ mail_server_form.from_email }}
+                {% if mail_server_form.from_email.errors %}<div class="error-box">{{ mail_server_form.from_email.errors }}</div>{% endif %}
+            </div>
+            <div class="checkbox-row">
+                <label class="checkbox-field" for="id_is_active">{{ mail_server_form.is_active }} {{ mail_server_form.is_active.label }}</label>
+            </div>
+            <button type="submit" class="btn" style="width:100%;">Add mail server config</button>
+        </form>
+
+        {% if mail_server_configs %}
+        <h3 style="margin-top:22px; font-size:15px;">Your SMTP accounts</h3>
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Label</th>
+                        <th>Host</th>
+                        <th>Username</th>
+                        <th>Active</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for cfg in mail_server_configs %}
+                        <tr>
+                            <td>{{ cfg.label|default:"—" }}</td>
+                            <td>{{ cfg.host|default:"(default)" }}</td>
+                            <td>{{ cfg.username|default:"(default)" }}</td>
+                            <td>{% if cfg.is_active %}Yes{% else %}No{% endif %}</td>
+                            <td>
+                                <button type="button" class="btn btn-sm btn-secondary" onclick="openEditMailServerModal({{ cfg.id }})">Edit</button>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% for cfg in mail_server_configs %}
+        <div id="edit-mail-server-modal-{{ cfg.id }}" class="download-modal-overlay" style="display:none;">
+            <div class="download-modal" style="text-align:left;">
+                <h3>Edit SMTP account</h3>
+                <form method="post" action="{% url 'core:update_mail_server_config' cfg.id %}">
+                    {% csrf_token %}
+                    <div class="field">
+                        <label for="edit-cfg-label-{{ cfg.id }}">Label (optional)</label>
+                        <input type="text" name="label" id="edit-cfg-label-{{ cfg.id }}" value="{{ cfg.label }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-cfg-host-{{ cfg.id }}">SMTP host</label>
+                        <input type="text" name="host" id="edit-cfg-host-{{ cfg.id }}" value="{{ cfg.host }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-cfg-port-{{ cfg.id }}">Port</label>
+                        <input type="number" name="port" id="edit-cfg-port-{{ cfg.id }}" value="{{ cfg.port }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-cfg-username-{{ cfg.id }}">Username</label>
+                        <input type="text" name="username" id="edit-cfg-username-{{ cfg.id }}" value="{{ cfg.username }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-cfg-password-{{ cfg.id }}">Password</label>
+                        <input type="password" name="password" id="edit-cfg-password-{{ cfg.id }}" placeholder="leave blank to keep current password">
+                    </div>
+                    <div class="field">
+                        <label for="edit-cfg-from-{{ cfg.id }}">From email (optional)</label>
+                        <input type="text" name="from_email" id="edit-cfg-from-{{ cfg.id }}" value="{{ cfg.from_email }}">
+                    </div>
+                    <div class="field">
+                        <label for="edit-cfg-encryption-{{ cfg.id }}">Encryption</label>
+                        <select name="encryption" id="edit-cfg-encryption-{{ cfg.id }}">
+                            <option value="tls" {% if cfg.encryption == "tls" %}selected{% endif %}>TLS</option>
+                            <option value="ssl" {% if cfg.encryption == "ssl" %}selected{% endif %}>SSL</option>
+                            <option value="none" {% if cfg.encryption == "none" %}selected{% endif %}>None</option>
+                        </select>
+                    </div>
+                    <div class="field" style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" name="is_active" id="edit-cfg-active-{{ cfg.id }}" {% if cfg.is_active %}checked{% endif %}>
+                        <label for="edit-cfg-active-{{ cfg.id }}" style="margin:0;">Active</label>
+                    </div>
+                    <button type="submit" class="btn" style="width:100%;">Save changes</button>
+                    <button type="button" class="btn btn-secondary" style="width:100%; margin-top:8px;" onclick="closeEditMailServerModal({{ cfg.id }})">Cancel</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+        {% endif %}
+        <hr style="margin:26px 0; border:none; border-top:1px solid #333;">
+        {% endif %}
+
         <div class="info-box">
                 <strong>Make Your Mail Signature</strong>
         </div>
@@ -1040,19 +1176,77 @@ function showExtraTab(tab) {
 
     var SPEAK_REPEAT_COUNT = 2;
 
+    // The Web Speech API has no gender field on a voice — only a name/lang —
+    // so this matches against common female-voice names shipped by
+    // Chrome/Edge/Safari/Windows/macOS. Falls back to whatever the browser
+    // defaults to if none of these are installed.
+    var FEMALE_VOICE_NAME_HINTS = [
+        'female', 'zira', 'jenny', 'aria', 'samantha', 'victoria', 'karen',
+        'moira', 'tessa', 'susan', 'hazel', 'fiona', 'kate', 'salli', 'joanna',
+        'google us english', 'google uk english female', 'microsoft zira',
+    ];
+    // Used only as a tie-breaker when nothing above matched — steer away
+    // from an obviously-male-named voice rather than blindly taking
+    // whichever one the browser happens to list first.
+    var MALE_VOICE_NAME_HINTS = [
+        'male', 'david', 'mark', 'george', 'james', 'daniel', 'guy', 'ryan',
+        'fred', 'alex', 'tom', 'google uk english male',
+    ];
+    var cachedFemaleVoice = null;
+    var femaleVoiceResolved = false;
+
+    function pickFemaleVoice() {
+        if (femaleVoiceResolved) return cachedFemaleVoice;
+        var voices = window.speechSynthesis.getVoices();
+        if (!voices.length) return null; // not loaded yet — try again next call
+        var english = voices.filter(function (v) { return /^en/i.test(v.lang); });
+        var pool = english.length ? english : voices;
+
+        var isFemale = function (v) {
+            var name = v.name.toLowerCase();
+            return FEMALE_VOICE_NAME_HINTS.some(function (hint) { return name.indexOf(hint) !== -1; });
+        };
+        var isMale = function (v) {
+            var name = v.name.toLowerCase();
+            return MALE_VOICE_NAME_HINTS.some(function (hint) { return name.indexOf(hint) !== -1; });
+        };
+
+        // 1) a recognizably female-named voice, 2) failing that, anything
+        // NOT recognizably male-named (many "neutral"-sounding installed
+        // voices default to female anyway), 3) failing that, give up and
+        // let the browser use its own default.
+        var match = pool.find(isFemale) || pool.find(function (v) { return !isMale(v); }) || null;
+        cachedFemaleVoice = match;
+        femaleVoiceResolved = true;
+        return cachedFemaleVoice;
+    }
+
     function speak(text) {
         if (!('speechSynthesis' in window)) return;
         try {
+            var voice = pickFemaleVoice();
             // speechSynthesis.speak() queues utterances rather than overlapping
             // them, so queuing it N times says the same line N times in a row.
             for (var i = 0; i < SPEAK_REPEAT_COUNT; i++) {
-                window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+                var utter = new SpeechSynthesisUtterance(text);
+                if (voice) { utter.voice = voice; }
+                utter.pitch = 1.15;
+                window.speechSynthesis.speak(utter);
             }
         } catch (e) { /* TTS unusable in this browser — the Notification popup below still fires */ }
     }
 
+    if ('speechSynthesis' in window) {
+        // Chrome loads the voice list asynchronously — it's often empty on
+        // the very first call, so re-resolve once the browser actually has it.
+        window.speechSynthesis.onvoiceschanged = function () {
+            femaleVoiceResolved = false;
+            pickFemaleVoice();
+        };
+    }
+
     function notify(count) {
-        var text = 'Hey, you got ' + count + ' new dispute' + (count === 1 ? '' : 's') + '.';
+        var text = 'Hey baby, you got ' + count + ' new dispute' + (count === 1 ? '' : 's') + '.';
         if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
             new Notification('Dispute alert', { body: text });
         }
@@ -1145,6 +1339,16 @@ function openEditSchedRecipientModal(id) {
 
 function closeEditSchedRecipientModal(id) {
     var modal = document.getElementById('edit-sched-recipient-modal-' + id);
+    if (modal) { modal.style.display = 'none'; }
+}
+
+function openEditMailServerModal(id) {
+    var modal = document.getElementById('edit-mail-server-modal-' + id);
+    if (modal) { modal.style.display = 'flex'; }
+}
+
+function closeEditMailServerModal(id) {
+    var modal = document.getElementById('edit-mail-server-modal-' + id);
     if (modal) { modal.style.display = 'none'; }
 }
 
