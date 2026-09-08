@@ -33,6 +33,7 @@ from .forms import (
     BankStatementUploadForm,
     CreateUserForm,
     DbFetchForm,
+    MailServerConfigForm,
     MailSignatureForm,
     ScheduledReportRecipientForm,
     UpdateUserForm,
@@ -43,6 +44,7 @@ from .forms import (
 from .models import (
     BankAccount,
     DisputeNotificationEvent,
+    MailServerConfig,
     MailSignature,
     MemberAggregatorStat,
     ProcessingLog,
@@ -60,6 +62,7 @@ from .services import (
     MAIL_SIGNATURE_IMAGE_CID,
     ProcessingError,
     apply_bank_statement_to_reversal_file,
+    build_mail_connection,
     build_output_filename,
     build_uploaded_filename,
     build_verification_bank_filename,
@@ -446,6 +449,12 @@ _EXTRA_TAB_ORDER = [
 
 
 def _tab_allowed(tab: str, feat: dict) -> bool:
+    if tab == "scheduler":
+        # Always reachable: the desktop-alerts checkbox on this tab is
+        # self-service for every logged-in user (see _extra_page_context),
+        # same as Mail signature, even though the recipient/Start-Stop
+        # controls on it still require can_scheduler.
+        return True
     flag = dict(_EXTRA_TAB_ORDER).get(tab)
     return flag is None or feat.get(flag, False)
 
@@ -478,6 +487,13 @@ def _extra_page_context(request):
     # core.services.resolve_mail_signature().
     context["mail_signature_form"] = MailSignatureForm()
     context["mail_signatures"] = MailSignature.objects.filter(user=request.user)
+    # Same tab, its own section above the signature editor — which SMTP
+    # account that outgoing email actually goes out through
+    # (core.models.MailServerConfig). Also per-user/self-service: leave
+    # every field blank to keep using the SMTP_*/.env account — see
+    # core.services.resolve_mail_connection_config().
+    context["mail_server_form"] = MailServerConfigForm()
+    context["mail_server_configs"] = MailServerConfig.objects.filter(user=request.user)
     if feat["can_verification_format"]:
         context["verification_form"] = VerificationFormatUploadForm()
     if feat["can_issuer_bank_accounts"]:
@@ -516,11 +532,20 @@ def _extra_page_context(request):
                 u.access_summary = ", ".join(labels) if labels else "—"
         context["all_users"] = users_page.object_list
         context["users_page"] = users_page
+    # "Scheduler" tab — always reachable (see _tab_allowed) because the
+    # "Desktop alerts" checkbox on it is self-service for every logged-in
+    # user, same as Mail signature, even for someone with no can_scheduler
+    # access: in-browser Notification + spoken TTS, see
+    # toggle_desktop_notifications_view / poll_dispute_notifications_view.
+    context["scheduler_tab_visible"] = True
+    notif_pref = getattr(request.user, "notification_preference", None)
+    context["desktop_notifications_enabled"] = bool(notif_pref and notif_pref.desktop_notifications_enabled)
     if feat["can_scheduler"]:
-        # "Scheduler" tab — recipient lists + Start/Stop for both
-        # core.scheduler background jobs. Both job rows always exist
-        # (get_or_create, defaulting to stopped) so the template can show
-        # a status line even before either has ever been touched.
+        # Recipient lists + Start/Stop for both core.scheduler background
+        # jobs. Both job rows always exist (get_or_create, defaulting to
+        # stopped) so the template can show a status line even before
+        # either has ever been touched. Gated behind can_scheduler,
+        # unlike the checkbox above.
         context["dispute_recipient_form"] = ScheduledReportRecipientForm()
         context["dispute_recipients"] = ScheduledReportRecipient.objects.filter(
             report_type=ScheduledReportRecipient.REPORT_DISPUTE_ALERT
@@ -533,11 +558,6 @@ def _extra_page_context(request):
         daily_state, _ = SchedulerJobState.objects.get_or_create(job_key=SchedulerJobState.JOB_DAILY_REPORT)
         context["dispute_job_state"] = dispute_state
         context["daily_job_state"] = daily_state
-        # "Desktop alerts" checkbox next to the dispute/timeout alert
-        # status row — in-browser Notification + spoken TTS, see
-        # toggle_desktop_notifications_view / poll_dispute_notifications_view.
-        notif_pref = getattr(request.user, "notification_preference", None)
-        context["desktop_notifications_enabled"] = bool(notif_pref and notif_pref.desktop_notifications_enabled)
     return context
 
 
@@ -742,6 +762,65 @@ def poll_dispute_notifications_view(request):
 
     new_count = DisputeNotificationEvent.objects.filter(id__gt=after_id).aggregate(total=Sum("count"))["total"] or 0
     return JsonResponse({"enabled": enabled, "new_count": new_count, "latest_id": latest_id})
+
+
+@login_required
+@require_POST
+def add_mail_server_config_view(request):
+    """Add a new core.models.MailServerConfig row, owned by the logged-in
+    user, from the "Extra" page's "Mail signature" tab (top section) —
+    which SMTP account that same user's own outgoing emails go out
+    through going forward (see resolve_mail_connection_config() in
+    core/services.py). Any logged-in user can add their own; there's no
+    admin gate here since each person/department only ever manages their
+    own account. Leaving a field blank keeps that outgoing email on the
+    SMTP_*/.env default for it (see MailServerConfig's own docstring)."""
+    form = MailServerConfigForm(request.POST)
+    if form.is_valid():
+        config = form.save(commit=False)
+        config.user = request.user
+        config.save()
+        label = config.label or config.host or "SMTP config"
+        messages.success(request, f"Mail server config '{label}' added.")
+        log_action(request, f"Added mail server config '{label}'")
+    else:
+        for field, errors in form.errors.items():
+            label = form.fields[field].label if field in form.fields else field
+            for err in errors:
+                messages.error(request, f"{label}: {err}")
+    return redirect(f"{reverse('core:bank_statement_upload')}?tab=mailsignature")
+
+
+@login_required
+@require_POST
+def update_mail_server_config_view(request, config_id):
+    """Edit an existing SMTP account — the Edit button next to each row
+    on the "Mail signature" tab's SMTP list. Leaving Password blank on
+    the edit form keeps whatever password is already saved instead of
+    wiping it out — the field is deliberately never re-rendered into the
+    page (see MailServerConfigForm), so there's nothing to resubmit
+    unless it's actually changing. Untick "Active" to retire an account
+    without deleting its history. Only the account's own owner (or an
+    admin, e.g. cleaning up after someone's left) can edit it."""
+    config = get_object_or_404(MailServerConfig, id=config_id)
+    if config.user_id != request.user.id and not is_admin(request.user):
+        messages.error(request, "You can only edit your own mail server config.")
+        return redirect(f"{reverse('core:bank_statement_upload')}?tab=mailsignature")
+    existing_password = config.password
+    form = MailServerConfigForm(request.POST, instance=config)
+    if form.is_valid():
+        if not form.cleaned_data.get("password"):
+            form.instance.password = existing_password
+        config = form.save()
+        label = config.label or config.host or "SMTP config"
+        messages.success(request, f"Mail server config '{label}' updated.")
+        log_action(request, f"Updated mail server config '{label}' (#{config.id})")
+    else:
+        for field, errors in form.errors.items():
+            label = form.fields[field].label if field in form.fields else field
+            for err in errors:
+                messages.error(request, f"{label}: {err}")
+    return redirect(f"{reverse('core:bank_statement_upload')}?tab=mailsignature")
 
 
 @login_required
@@ -1001,7 +1080,14 @@ def verification_send_mail_view(request):
     fallback_sender_name = request.user.get_full_name() or request.user.username
     subject, html_body, text_body = build_verification_email(bank_name, rows, fallback_sender_name, sender=request.user)
 
-    email = EmailMultiAlternatives(subject=subject, body=text_body, to=to_list, cc=cc_list or None)
+    # Sent through the logged-in user's own SMTP account (or their
+    # department's shared one) if they've configured one on the "Mail
+    # signature" tab, rather than always going out as the SMTP_*/.env
+    # account — see resolve_mail_connection_config() in core/services.py.
+    connection, from_email = build_mail_connection(user=request.user)
+    email = EmailMultiAlternatives(
+        subject=subject, body=text_body, from_email=from_email, to=to_list, cc=cc_list or None, connection=connection
+    )
     email.attach_alternative(html_body, "text/html")
 
     # Inline sct-signature banner referenced by the HTML body as

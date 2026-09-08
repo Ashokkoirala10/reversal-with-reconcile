@@ -72,7 +72,7 @@ DATABASES = {
 # DATABASES = {
 #     "default": {
 #         "ENGINE": "django.db.backends.postgresql",
-#         "NAME": os.environ.get("POSTGRES_DB", "reversal_db"),
+#         "NAME": os.environ.get("POSTGRES_DB", "sct_reversal_db"),
 #         "USER": os.environ.get("POSTGRES_USER", "postgres"),
 #         "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
 #         "HOST": os.environ.get("POSTGRES_HOST", "localhost"),

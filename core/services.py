@@ -2166,6 +2166,90 @@ def build_verification_bank_filename(bank_name: str, source_filename: str) -> st
     return f"verification_{safe}_{_extract_date_str(source_filename)}.xlsx"
 
 
+def resolve_mail_connection_config(user: Any = None) -> dict[str, Any]:
+    """Which SMTP account to actually send through — the sending `user`'s
+    own active core.models.MailServerConfig row if they have one, else a
+    shared user=None active row, else the SMTP_*/.env settings outright
+    (see reversal_project/settings.py's EMAIL_* block). Same three-level
+    fallback as resolve_mail_signature() just below, and for the same
+    reason: this app is meant to go live for more than one department,
+    each sending as their own mailbox, without everyone being forced onto
+    one shared SMTP_* .env account.
+
+    Blank Host/Username/Password/From-email on the row that wins falls
+    back to the matching SMTP_*/.env value field-by-field, not the whole
+    row at once, so a department can override just e.g. From email while
+    still using the shared password. `system` sends (user=None — the
+    core.scheduler background jobs have no acting user) go straight to
+    "shared row, else settings" since there's no per-user row to check.
+
+    Returns a dict of connection kwargs (host/port/username/password/
+    use_tls/use_ssl) plus from_email — pass straight into
+    build_mail_connection() below rather than reading EMAIL_* off
+    `django.conf.settings` directly, so every outgoing email (system or
+    per-user) resolves its sender account the same way."""
+    from django.conf import settings  # lazy: services.py stays importable without Django set up
+    from .models import MailServerConfig
+
+    env_defaults = {
+        "host": getattr(settings, "EMAIL_HOST", "") or "",
+        "port": getattr(settings, "EMAIL_PORT", 587) or 587,
+        "username": getattr(settings, "EMAIL_HOST_USER", "") or "",
+        "password": getattr(settings, "EMAIL_HOST_PASSWORD", "") or "",
+        "from_email": getattr(settings, "DEFAULT_FROM_EMAIL", "") or "",
+        "use_tls": bool(getattr(settings, "EMAIL_USE_TLS", False)),
+        "use_ssl": bool(getattr(settings, "EMAIL_USE_SSL", False)),
+    }
+
+    def _resolved(row) -> dict[str, Any]:
+        use_tls = row.encryption == MailServerConfig.ENCRYPTION_TLS
+        use_ssl = row.encryption == MailServerConfig.ENCRYPTION_SSL
+        return {
+            "host": row.host or env_defaults["host"],
+            "port": row.port or env_defaults["port"],
+            "username": row.username or env_defaults["username"],
+            "password": row.password or env_defaults["password"],
+            "from_email": row.from_email or row.username or env_defaults["from_email"],
+            "use_tls": use_tls,
+            "use_ssl": use_ssl,
+        }
+
+    own_active = None
+    if user is not None and getattr(user, "is_authenticated", False):
+        own_active = MailServerConfig.objects.filter(user=user, is_active=True).order_by("-updated_at").first()
+    if own_active is not None:
+        return _resolved(own_active)
+
+    shared_active = MailServerConfig.objects.filter(user__isnull=True, is_active=True).order_by("-updated_at").first()
+    if shared_active is not None:
+        return _resolved(shared_active)
+
+    return env_defaults
+
+
+def build_mail_connection(user: Any = None):
+    """(connection, from_email) for sending one email as `user` (or as
+    the system, user=None) — pass `connection=` and `from_email=` into
+    EmailMultiAlternatives so it actually goes out through the resolved
+    account instead of Django's implicit settings.EMAIL_* connection,
+    which is always the SMTP_*/.env account regardless of who's sending."""
+    from django.conf import settings
+    from django.core.mail import get_connection
+
+    cfg = resolve_mail_connection_config(user)
+    connection = get_connection(
+        backend="django.core.mail.backends.smtp.EmailBackend",
+        host=cfg["host"],
+        port=cfg["port"],
+        username=cfg["username"],
+        password=cfg["password"],
+        use_tls=cfg["use_tls"],
+        use_ssl=cfg["use_ssl"],
+        timeout=getattr(settings, "EMAIL_TIMEOUT", 15),
+    )
+    return connection, cfg["from_email"]
+
+
 def resolve_mail_signature(fallback_name: str = "", user: Any = None) -> dict[str, str]:
     """Who/what to sign an outgoing email with (a verification "Send
     mail", or a reconcile issue-note "notify others" alert).

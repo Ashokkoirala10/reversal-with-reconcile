@@ -2,6 +2,8 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from .crypto import EncryptedCharField
+
 
 def upload_path(instance, filename):
     return f"uploads/{instance.id or 'tmp'}_{filename}"
@@ -459,6 +461,104 @@ class MailSignature(models.Model):
 
     def __str__(self):
         return f"{self.name or self.title} ({'active' if self.is_active else 'inactive'})"
+
+
+class MailServerConfig(models.Model):
+    """Which SMTP account an outgoing email (verification "Send mail",
+    reconcile issue-note "notify others" alert, or a scheduler system
+    alert) is actually sent through — per user, same self-service model
+    as MailSignature just above: each user/department keeps their own
+    account here instead of everyone sharing the single SMTP_* .env
+    account, so "goes live for other departments" doesn't mean they all
+    send as one person's mailbox. resolve_mail_connection() in
+    core/services.py picks it up by whichever user is actually sending.
+
+    `user` is nullable for the same reason as MailSignature.user: a
+    user=None active row is a shared/system account (used for a
+    system-triggered send with no acting user, e.g. core.scheduler's
+    background jobs, or as an org-wide fallback before finally reaching
+    the SMTP_*/.env settings). Resolution order in
+    resolve_mail_connection(): the sending user's own active row, else a
+    shared user=None active row, else the SMTP_*/.env defaults outright
+    — so nothing breaks for anyone who hasn't configured their own yet.
+
+    Blank Host/Username/From email/Password on a row fall back to the
+    matching SMTP_*/.env value field-by-field (not the whole row at
+    once) — same partial-override behaviour as MailSignature's
+    company/address/etc. When a user has more than one active row, the
+    most recently updated one wins, same as MailSignature.
+
+    Password is stored as entered (plaintext), matching how the SMTP_*
+    .env value it's replacing was already handled — this app has no
+    field-level encryption infrastructure. Treat DB access/backups
+    accordingly; don't broaden who can read this table."""
+
+    ENCRYPTION_TLS = "tls"
+    ENCRYPTION_SSL = "ssl"
+    ENCRYPTION_NONE = "none"
+    ENCRYPTION_CHOICES = [
+        (ENCRYPTION_TLS, "TLS"),
+        (ENCRYPTION_SSL, "SSL"),
+        (ENCRYPTION_NONE, "None"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="mail_server_configs",
+        null=True,
+        blank=True,
+        help_text="Whose SMTP account this is — blank only for a shared/system fallback row.",
+    )
+    label = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Optional — a name to tell rows apart, e.g. 'Finance dept SMTP'.",
+    )
+    host = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="e.g. smtp.office365.com — leave blank to use the SMTP_HOST default.",
+    )
+    port = models.PositiveIntegerField(default=587)
+    username = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Usually the full mailbox email address — leave blank to use the SMTP_USERNAME default.",
+    )
+    password = EncryptedCharField(
+        # Column size for the Fernet ciphertext, not the plaintext password
+        # itself — encryption inflates a short password to well over 255
+        # bytes once base64-encoded (version+timestamp+IV+HMAC overhead),
+        # so this must stay comfortably above that or Postgres will reject
+        # (and sqlite will silently truncate) an encrypted save.
+        max_length=512,
+        blank=True,
+        default="",
+        help_text="Leave blank when editing to keep the current password. Stored encrypted, never in plaintext.",
+    )
+    from_email = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Optional — leave blank to send as Username (or the SMTP_FROM_EMAIL default).",
+    )
+    encryption = models.CharField(max_length=10, choices=ENCRYPTION_CHOICES, default=ENCRYPTION_TLS)
+    is_active = models.BooleanField(
+        default=True,
+        help_text="The most recently updated active row is used to send this user's outgoing mail.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return f"{self.label or self.host or 'SMTP config'} ({'active' if self.is_active else 'inactive'})"
 
 
 class UserAccess(models.Model):

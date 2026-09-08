@@ -22,7 +22,6 @@ core.views._build_general_report_workbook)."""
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
 from datetime import timedelta
 from email.mime.image import MIMEImage
 from io import BytesIO
@@ -32,7 +31,12 @@ from django.core.mail import EmailMultiAlternatives
 from django.utils import timezone
 
 from . import switch_db
-from .services import MAIL_SIGNATURE_IMAGE_CID, build_signature_blocks, resolve_mail_signature
+from .services import (
+    MAIL_SIGNATURE_IMAGE_CID,
+    build_mail_connection,
+    build_signature_blocks,
+    resolve_mail_signature,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +95,35 @@ def _naive_local(dt):
 _DISPUTE_LOOKBACK_BUFFER_MINUTES = 5
 
 
+_DEBIT_SUCCESS_CODE = "000"
+
+
+def _dispute_reason(row: dict) -> str:
+    """The one message actually worth reading out of a timed-out row's
+    Source Message / Destination Message pair. If the debit (source) side
+    already succeeded, the source message is just "Transaction
+    Approved"/"SUCCESS" — useless — so the destination message is the
+    real reason the transaction is stuck. If the debit side itself
+    failed, that's the reason, regardless of what the destination side
+    says.
+
+    "Debit Status" here is switch_db's dbs.code (transaction_status.code
+    for the DR entry) — a raw response code, NOT the human-readable
+    "SUCCESS"/"FAILED"/"TIMEOUT" text build_verification_format() checks
+    in core/services.py (that one reads an uploaded export's own "Debit
+    Status" column, a different, already-normalized value under the same
+    column name — don't assume the two mean the same thing). Confirmed
+    against the switch DB directly: every approved DR/CR entry_type row
+    (regardless of message text — "Transaction Approved", "SUCCESS",
+    "Success", "Successfully Completed Transaction", ...) carries
+    code == "000"; every failure/timeout code seen is something else
+    ("999", "E999", "320", ...)."""
+    debit_status = str(row.get("Debit Status") or "").strip()
+    if debit_status == _DEBIT_SUCCESS_CODE:
+        return row.get("Destination Message") or "—"
+    return row.get("Source Message") or "—"
+
+
 def check_dispute_timeouts() -> None:
     from .models import AlertedTimeoutTransaction, DisputeNotificationEvent, ScheduledReportRecipient, SchedulerJobState
 
@@ -139,11 +172,6 @@ def check_dispute_timeouts() -> None:
     # reads, so an in-browser alert still fires even with no recipients configured.
     DisputeNotificationEvent.objects.create(count=len(new_timeouts))
 
-    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for r in new_timeouts:
-        key = (r.get("Aggregator") or "—", r.get("Payment Processor") or "—")
-        groups[key].append(r.get("Network Reference Id") or "—")
-
     to_list, cc_list = _recipients(ScheduledReportRecipient.REPORT_DISPUTE_ALERT)
     if not to_list:
         state.last_result = f"{len(new_timeouts)} new timeout(s) found but no recipients configured"
@@ -151,20 +179,27 @@ def check_dispute_timeouts() -> None:
         logger.warning("Dispute/timeout alert: %d new timeout(s) found but no recipients configured", len(new_timeouts))
         return
 
+    # One row per transaction (not grouped) since the Reason is per-transaction —
+    # sorted by Aggregator/Payment Processor purely so related rows sit together.
+    sorted_timeouts = sorted(
+        new_timeouts, key=lambda r: (r.get("Aggregator") or "—", r.get("Payment Processor") or "—")
+    )
     rows_html = "".join(
-        f"<tr><td style='border:1px solid #999;padding:4px 8px;'>{agg}</td>"
-        f"<td style='border:1px solid #999;padding:4px 8px;'>{proc}</td>"
-        f"<td style='border:1px solid #999;padding:4px 8px;text-align:right;'>{len(ref_ids_)}</td>"
-        f"<td style='border:1px solid #999;padding:4px 8px;'>{', '.join(ref_ids_)}</td></tr>"
-        for (agg, proc), ref_ids_ in sorted(groups.items(), key=lambda kv: -len(kv[1]))
+        f"<tr><td style='border:1px solid #999;padding:4px 8px;'>{r.get('Aggregator') or '—'}</td>"
+        f"<td style='border:1px solid #999;padding:4px 8px;'>{r.get('Payment Processor') or '—'}</td>"
+        f"<td style='border:1px solid #999;padding:4px 8px;'>{r.get('Network Reference Id') or '—'}</td>"
+        f"<td style='border:1px solid #999;padding:4px 8px;'>{_dispute_reason(r)}</td>"
+        f"<td style='border:1px solid #999;padding:4px 8px;'>{r.get('Overall Status') or '—'}</td></tr>"
+        for r in sorted_timeouts
     )
     table_html = (
         "<table style='border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:12.5px;'>"
         "<thead><tr>"
         "<th style='border:1px solid #999;padding:4px 8px;background:#f2f2f2;'>Aggregator</th>"
         "<th style='border:1px solid #999;padding:4px 8px;background:#f2f2f2;'>Payment Processor</th>"
-        "<th style='border:1px solid #999;padding:4px 8px;background:#f2f2f2;'>Count</th>"
-        "<th style='border:1px solid #999;padding:4px 8px;background:#f2f2f2;'>Network Reference Id(s)</th>"
+        "<th style='border:1px solid #999;padding:4px 8px;background:#f2f2f2;'>Network Reference Id</th>"
+        "<th style='border:1px solid #999;padding:4px 8px;background:#f2f2f2;'>Reason</th>"
+        "<th style='border:1px solid #999;padding:4px 8px;background:#f2f2f2;'>Overall Status</th>"
         f"</tr></thead><tbody>{rows_html}</tbody></table>"
     )
 
@@ -178,11 +213,18 @@ def check_dispute_timeouts() -> None:
     )
     text_body = (
         f"{len(new_timeouts)} transaction(s) timed out as of {naive_now:%Y-%m-%d %H:%M}.\n\n"
-        + "\n".join(f"{agg} / {proc}: {len(ref_ids_)} — {', '.join(ref_ids_)}" for (agg, proc), ref_ids_ in groups.items())
+        + "\n".join(
+            f"{r.get('Aggregator') or '—'} / {r.get('Payment Processor') or '—'} — "
+            f"{r.get('Network Reference Id') or '—'}: {_dispute_reason(r)} ({r.get('Overall Status') or '—'})"
+            for r in sorted_timeouts
+        )
         + f"\n\n{sig_text}"
     )
 
-    email = EmailMultiAlternatives(subject=subject, body=text_body, to=to_list, cc=cc_list or None)
+    connection, from_email = build_mail_connection(user=None)
+    email = EmailMultiAlternatives(
+        subject=subject, body=text_body, from_email=from_email, to=to_list, cc=cc_list or None, connection=connection
+    )
     email.attach_alternative(html_body, "text/html")
     _attach_signature_image(email)
     try:
@@ -308,7 +350,10 @@ def send_daily_report() -> None:
         + f"\n\n{sig_text}"
     )
 
-    email = EmailMultiAlternatives(subject=subject, body=text_body, to=to_list, cc=cc_list or None)
+    connection, from_email = build_mail_connection(user=None)
+    email = EmailMultiAlternatives(
+        subject=subject, body=text_body, from_email=from_email, to=to_list, cc=cc_list or None, connection=connection
+    )
     email.attach_alternative(html_body, "text/html")
     _attach_signature_image(email)
     email.attach(

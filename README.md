@@ -123,10 +123,12 @@ web app itself, and to work on Windows, which has no cron) runs two jobs:
 
 - **Dispute/timeout alert** — every minute, checks the switch DB for
   transactions that newly show `Overall Status = TIMEOUT` and emails a
-  summary (grouped by Aggregator / Payment Processor) to configured
-  recipients. A dedup ledger guarantees the same transaction is never
-  alerted twice, even though each check's window intentionally overlaps
-  the previous one.
+  table with one row per transaction (Aggregator, Payment Processor,
+  Network Reference Id, Reason, Overall Status) to configured recipients.
+  Reason is the destination message if the debit side already succeeded,
+  otherwise the debit side's own message. A dedup ledger guarantees the
+  same transaction is never alerted twice, even though each check's
+  window intentionally overlaps the previous one.
 - **Daily transaction report** — every day at 09:00, emails the previous
   day's Issuer-wise / Acquirer-wise / Aggregator-wise breakdown (same
   numbers as the Dashboard's General tab export), as an Excel attachment
