@@ -51,13 +51,12 @@ def decrypt_secret(ciphertext: str) -> str:
 
 class EncryptedCharField(models.CharField):
     """A CharField that's encrypted at rest and transparent everywhere
-    else — Python code (forms, views, resolve_mail_connection_config())
-    always sees/sets the plaintext value; only the DB column holds the
-    Fernet ciphertext. `max_length` here is the *plaintext* limit users
-    see on the form; the column itself needs real headroom for the
-    ciphertext, which is why MailServerConfig.password's own max_length is
-    set well above what a human password ever needs (see that field's
-    definition)."""
+    else — any Python code touching it always sees/sets the plaintext
+    value; only the DB column holds the Fernet ciphertext. `max_length`
+    here is the *plaintext* limit users see on the form; the column
+    itself needs real headroom for the ciphertext, which is why
+    MailServerConfig.password's own max_length is set well above what a
+    human password ever needs (see that field's definition)."""
 
     def get_prep_value(self, value):
         value = super().get_prep_value(value)

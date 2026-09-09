@@ -1,5 +1,6 @@
 import base64
 import io
+import logging
 import time
 from datetime import datetime
 from email.mime.image import MIMEImage
@@ -33,7 +34,6 @@ from .forms import (
     BankStatementUploadForm,
     CreateUserForm,
     DbFetchForm,
-    MailServerConfigForm,
     MailSignatureForm,
     ScheduledReportRecipientForm,
     UpdateUserForm,
@@ -44,7 +44,6 @@ from .forms import (
 from .models import (
     BankAccount,
     DisputeNotificationEvent,
-    MailServerConfig,
     MailSignature,
     MemberAggregatorStat,
     ProcessingLog,
@@ -62,7 +61,7 @@ from .services import (
     MAIL_SIGNATURE_IMAGE_CID,
     ProcessingError,
     apply_bank_statement_to_reversal_file,
-    build_mail_connection,
+    build_default_mail_connection,
     build_output_filename,
     build_uploaded_filename,
     build_verification_bank_filename,
@@ -75,6 +74,8 @@ from .services import (
     group_verification_rows_by_bank,
     process_ibft_file,
 )
+
+logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 10
 
@@ -160,6 +161,9 @@ def upload_view(request):
                         previous_log.generated_file.path
                     )
                 except Exception:
+                    logger.warning(
+                        "Could not extract previously-reversed ids from log #%s", previous_log.id, exc_info=True
+                    )
                     previously_reversed_ids = set()
 
             # --- Overlapping-time-window dedup ---------------------------
@@ -192,6 +196,10 @@ def upload_view(request):
                     {"form": form, "db_fetch_form": db_fetch_form, "error": str(exc), **_panel_context(request)},
                 )
             except Exception as exc:  # noqa: BLE001 - surface unexpected errors to the audit log too
+                logger.exception(
+                    "Unexpected error processing upload for log #%s", log.id,
+                    extra={"log_id": log.id, "user": request.user.username},
+                )
                 log.status = ProcessingLog.STATUS_FAILED
                 log.error_message = f"Unexpected error: {exc}"
                 log.save()
@@ -258,6 +266,14 @@ def upload_view(request):
                 request,
                 f"Processed reversal file {source_desc}: {standardized_name} "
                 f"(#{log.id}, {log.total_rows} rows)",
+            )
+            logger.info(
+                "Processed upload #%s (%s, %d rows) for user=%s in %dms",
+                log.id, standardized_name, log.total_rows, request.user.username, elapsed_ms,
+                extra={
+                    "log_id": log.id, "filename": standardized_name, "rows": log.total_rows,
+                    "user": request.user.username, "duration_ms": elapsed_ms,
+                },
             )
             return redirect(reverse("core:result", args=[log.id]))
     else:
@@ -335,6 +351,10 @@ def bank_statement_upload_view(request):
                 messages.error(request, str(exc))
                 return redirect("core:bank_statement_upload")
             except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Unexpected error checking bank statement against log #%s", log.id,
+                    extra={"log_id": log.id, "user": request.user.username},
+                )
                 messages.error(request, f"Unexpected error while checking the bank statement: {exc}")
                 return redirect("core:bank_statement_upload")
 
@@ -487,13 +507,6 @@ def _extra_page_context(request):
     # core.services.resolve_mail_signature().
     context["mail_signature_form"] = MailSignatureForm()
     context["mail_signatures"] = MailSignature.objects.filter(user=request.user)
-    # Same tab, its own section above the signature editor — which SMTP
-    # account that outgoing email actually goes out through
-    # (core.models.MailServerConfig). Also per-user/self-service: leave
-    # every field blank to keep using the SMTP_*/.env account — see
-    # core.services.resolve_mail_connection_config().
-    context["mail_server_form"] = MailServerConfigForm()
-    context["mail_server_configs"] = MailServerConfig.objects.filter(user=request.user)
     if feat["can_verification_format"]:
         context["verification_form"] = VerificationFormatUploadForm()
     if feat["can_issuer_bank_accounts"]:
@@ -766,65 +779,6 @@ def poll_dispute_notifications_view(request):
 
 @login_required
 @require_POST
-def add_mail_server_config_view(request):
-    """Add a new core.models.MailServerConfig row, owned by the logged-in
-    user, from the "Extra" page's "Mail signature" tab (top section) —
-    which SMTP account that same user's own outgoing emails go out
-    through going forward (see resolve_mail_connection_config() in
-    core/services.py). Any logged-in user can add their own; there's no
-    admin gate here since each person/department only ever manages their
-    own account. Leaving a field blank keeps that outgoing email on the
-    SMTP_*/.env default for it (see MailServerConfig's own docstring)."""
-    form = MailServerConfigForm(request.POST)
-    if form.is_valid():
-        config = form.save(commit=False)
-        config.user = request.user
-        config.save()
-        label = config.label or config.host or "SMTP config"
-        messages.success(request, f"Mail server config '{label}' added.")
-        log_action(request, f"Added mail server config '{label}'")
-    else:
-        for field, errors in form.errors.items():
-            label = form.fields[field].label if field in form.fields else field
-            for err in errors:
-                messages.error(request, f"{label}: {err}")
-    return redirect(f"{reverse('core:bank_statement_upload')}?tab=mailsignature")
-
-
-@login_required
-@require_POST
-def update_mail_server_config_view(request, config_id):
-    """Edit an existing SMTP account — the Edit button next to each row
-    on the "Mail signature" tab's SMTP list. Leaving Password blank on
-    the edit form keeps whatever password is already saved instead of
-    wiping it out — the field is deliberately never re-rendered into the
-    page (see MailServerConfigForm), so there's nothing to resubmit
-    unless it's actually changing. Untick "Active" to retire an account
-    without deleting its history. Only the account's own owner (or an
-    admin, e.g. cleaning up after someone's left) can edit it."""
-    config = get_object_or_404(MailServerConfig, id=config_id)
-    if config.user_id != request.user.id and not is_admin(request.user):
-        messages.error(request, "You can only edit your own mail server config.")
-        return redirect(f"{reverse('core:bank_statement_upload')}?tab=mailsignature")
-    existing_password = config.password
-    form = MailServerConfigForm(request.POST, instance=config)
-    if form.is_valid():
-        if not form.cleaned_data.get("password"):
-            form.instance.password = existing_password
-        config = form.save()
-        label = config.label or config.host or "SMTP config"
-        messages.success(request, f"Mail server config '{label}' updated.")
-        log_action(request, f"Updated mail server config '{label}' (#{config.id})")
-    else:
-        for field, errors in form.errors.items():
-            label = form.fields[field].label if field in form.fields else field
-            for err in errors:
-                messages.error(request, f"{label}: {err}")
-    return redirect(f"{reverse('core:bank_statement_upload')}?tab=mailsignature")
-
-
-@login_required
-@require_POST
 def add_mail_signature_view(request):
     """Add a new core.models.MailSignature row, owned by the logged-in
     user, from the "Extra" page's "Mail signature" tab — used to sign
@@ -991,6 +945,7 @@ def verification_format_view(request):
             except ProcessingError as exc:
                 verification_form.add_error("dispute_file", str(exc))
             except Exception as exc:  # noqa: BLE001 - surface unexpected errors on the form too
+                logger.exception("Unexpected error converting verification format for '%s'", uploaded.name)
                 verification_form.add_error("dispute_file", f"Unexpected error while converting the file: {exc}")
             else:
                 buf = io.BytesIO()
@@ -1067,6 +1022,7 @@ def verification_send_mail_view(request):
     try:
         xlsx_bytes = base64.b64decode(b64)
     except Exception:
+        logger.warning("Corrupted base64 verification attachment from user=%s", request.user.username, exc_info=True)
         return JsonResponse({"success": False, "message": "Corrupted file data — please convert again."}, status=400)
 
     try:
@@ -1075,16 +1031,15 @@ def verification_send_mail_view(request):
         rows = [list(row) for row in ws.iter_rows(min_row=2, values_only=True)]
         wb.close()
     except Exception as exc:  # noqa: BLE001 - surface unexpected errors to the caller
+        logger.exception("Could not read verification attachment '%s'", filename)
         return JsonResponse({"success": False, "message": f"Could not read the attachment: {exc}"}, status=400)
 
     fallback_sender_name = request.user.get_full_name() or request.user.username
     subject, html_body, text_body = build_verification_email(bank_name, rows, fallback_sender_name, sender=request.user)
 
-    # Sent through the logged-in user's own SMTP account (or their
-    # department's shared one) if they've configured one on the "Mail
-    # signature" tab, rather than always going out as the SMTP_*/.env
-    # account — see resolve_mail_connection_config() in core/services.py.
-    connection, from_email = build_mail_connection(user=request.user)
+    # Always the single SMTP_*/.env account — see build_default_mail_connection()
+    # in core/services.py.
+    connection, from_email = build_default_mail_connection()
     email = EmailMultiAlternatives(
         subject=subject, body=text_body, from_email=from_email, to=to_list, cc=cc_list or None, connection=connection
     )
@@ -1107,10 +1062,18 @@ def verification_send_mail_view(request):
     try:
         email.send(fail_silently=False)
     except Exception as exc:  # noqa: BLE001 - surface the SMTP error to the caller
+        logger.exception(
+            "Verification mail send failed for bank=%s", bank_name,
+            extra={"bank": bank_name, "to": to_list, "user": request.user.username},
+        )
         return JsonResponse({"success": False, "message": f"Send failed: {exc}"}, status=502)
 
     recipients = ", ".join(to_list) + (f" (cc: {', '.join(cc_list)})" if cc_list else "")
     log_action(request, f"Sent verification mail for {bank_name or 'bank'} to {recipients}")
+    logger.info(
+        "Sent verification mail for bank=%s to %s (user=%s)", bank_name, recipients, request.user.username,
+        extra={"bank": bank_name, "to": to_list, "cc": cc_list, "user": request.user.username},
+    )
     return JsonResponse({"success": True, "message": f"Sent to {recipients}"})
 
 

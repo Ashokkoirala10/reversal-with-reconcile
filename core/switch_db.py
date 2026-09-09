@@ -15,6 +15,7 @@ Connection settings come from SWITCH_DB_* in .env (see settings.SWITCH_DB).
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 from io import BytesIO
 
 import openpyxl
@@ -24,6 +25,8 @@ from django.utils import timezone
 from openpyxl.utils import get_column_letter
 
 from .services import REQUIRED_COLUMNS
+
+logger = logging.getLogger(__name__)
 
 
 class SwitchDBError(Exception):
@@ -138,6 +141,7 @@ def _connect():
             connect_timeout=10,
         )
     except psycopg.OperationalError as exc:
+        logger.error("Could not connect to the switch database at %s:%s/%s", cfg.get("HOST"), cfg.get("PORT"), cfg.get("NAME"), exc_info=True)
         raise SwitchDBError(f"Could not connect to the switch database: {exc}") from exc
     # Belt-and-braces: this module only ever issues the one SELECT below,
     # but flipping the session itself to read-only means Postgres rejects
@@ -159,8 +163,10 @@ def fetch_transactions(start: _dt.datetime, end: _dt.datetime) -> list[dict]:
             colnames = [d.name for d in cur.description]
             raw_rows = [dict(zip(colnames, row)) for row in cur.fetchall()]
     except psycopg.Error as exc:
+        logger.error("Switch database query failed for window %s - %s", start, end, exc_info=True)
         raise SwitchDBError(f"Switch database query failed: {exc}") from exc
 
+    logger.info("Fetched %d transaction(s) from switch DB for window %s - %s", len(raw_rows), start, end)
     rows = []
     for i, r in enumerate(raw_rows, start=1):
         amount = r["amount"]

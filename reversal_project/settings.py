@@ -47,6 +47,9 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # After AuthenticationMiddleware so request.user is already resolved —
+    # see core/middleware.py for what it logs and why.
+    "core.middleware.RequestLoggingMiddleware",
 ]
 
 ROOT_URLCONF = "reversal_project.urls"
@@ -176,4 +179,72 @@ SWITCH_DB = {
     "NAME": os.environ.get("SWITCH_DB_NAME", ""),
     "USER": os.environ.get("SWITCH_DB_USER", ""),
     "PASSWORD": os.environ.get("SWITCH_DB_PASSWORD", ""),
+}
+
+# --- Logging --------------------------------------------------------------
+# Two rotating files under BASE_DIR/logs, written as JSON lines (see
+# core/logging_utils.JsonFormatter) so a log shipper (Promtail / Grafana
+# Agent tailing these files into Loki, etc.) can query on level/logger/any
+# extra={} field without a grok pattern: app.log gets every INFO+ line
+# (every request via core.middleware.RequestLoggingMiddleware, plus every
+# logger.info()/.exception() call across core/reconcile), error.log gets
+# ERROR+ only (uncaught exceptions — Django's own "django.request" logger
+# already emits those with a full traceback for every 5xx response) so a
+# problem can be found without scrolling past routine request lines. Not a
+# replacement for core.audit's audit_log.txt, which is a user-facing "who
+# did what" business trail, not an operational one.
+LOGS_DIR = BASE_DIR / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{asctime} {levelname} {name} {module}.{funcName}:{lineno} — {message}",
+            "style": "{",
+        },
+        "json": {
+            "()": "core.logging_utils.JsonFormatter",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": "DEBUG" if DEBUG else "INFO",
+            "formatter": "verbose",
+        },
+        "app_file": {
+            "class": "logging.handlers.TimedRotatingFileHandler",
+            "filename": LOGS_DIR / "app.log",
+            "when": "midnight",
+            "backupCount": 14,
+            "encoding": "utf-8",
+            "level": "INFO",
+            "formatter": "json",
+        },
+        "error_file": {
+            "class": "logging.handlers.TimedRotatingFileHandler",
+            "filename": LOGS_DIR / "error.log",
+            "when": "midnight",
+            "backupCount": 14,
+            "encoding": "utf-8",
+            "level": "ERROR",
+            "formatter": "json",
+        },
+    },
+    "root": {
+        "handlers": ["console", "app_file", "error_file"],
+        "level": "INFO",
+    },
+    "loggers": {
+        # Django's own request/500 logger — routed here instead of left to
+        # propagate only to the default console-only config, so an
+        # uncaught exception in a view always lands in error.log too.
+        "django.request": {
+            "handlers": ["console", "app_file", "error_file"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+    },
 }

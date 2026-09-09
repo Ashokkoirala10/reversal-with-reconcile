@@ -3,9 +3,12 @@ same file format the existing reversal_project app consumes."""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import openpyxl
+
+logger = logging.getLogger(__name__)
 
 REQUIRED_COLUMNS = [
     "S NO",
@@ -52,6 +55,7 @@ def load_transactions(path: str | Path) -> list[dict]:
     try:
         wb = openpyxl.load_workbook(path, data_only=True)
     except Exception as exc:
+        logger.error("Could not open transaction file %s as .xlsx", path, exc_info=True)
         raise TransactionFileError(
             f"Could not open the uploaded transaction file as an Excel file (.xlsx) — {exc}. "
             "Please upload the original TransactionReport / ibft-transaction export."

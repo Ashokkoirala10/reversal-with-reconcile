@@ -18,6 +18,7 @@ rows, 29/29 failed rows, 1/1 timeout row) before being written here.
 from __future__ import annotations
 
 import csv
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -28,6 +29,8 @@ import openpyxl
 import xlrd
 from openpyxl.styles import Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -421,6 +424,7 @@ def _bank_accounts() -> tuple[tuple[str, str, bool], ...]:
     except Exception:
         # DB not migrated / not available yet (e.g. some management
         # commands run before `migrate`) — fall back to the hardcoded pair.
+        logger.info("BankAccount table unavailable, falling back to hardcoded accounts", exc_info=True)
         accounts = ()
     if accounts:
         return accounts
@@ -625,7 +629,7 @@ def process_ibft_file(
                 if _tz.is_naive(latest):
                     latest = _tz.make_aware(latest)
             except Exception:
-                pass  # services.py stays usable outside Django too
+                logger.debug("Could not make data_through_at timezone-aware (running outside Django?)", exc_info=True)
         stats.data_through_at = latest
 
     def g(row, name):
@@ -815,6 +819,7 @@ def extract_reversal_network_reference_ids(reversal_file_path: str | Path) -> se
     try:
         wb = openpyxl.load_workbook(reversal_file_path, data_only=True, read_only=True)
     except Exception:
+        logger.warning("Could not open reversal file %s to extract reversed ids", reversal_file_path, exc_info=True)
         return ids
 
     try:
@@ -896,6 +901,7 @@ def _load_excel_rows(path: Path) -> list[list]:
         try:
             wb = xlrd.open_workbook(str(path))
         except Exception as exc:
+            logger.error("Could not open '%s' as .xls", path.name, exc_info=True)
             raise ProcessingError(
                 f"Could not open '{path.name}' as an Excel file (.xls) — {exc}. "
                 "Please upload the original bank statement export."
@@ -909,6 +915,7 @@ def _load_excel_rows(path: Path) -> list[list]:
     try:
         wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     except Exception as exc:
+        logger.error("Could not open '%s' as .xlsx", path.name, exc_info=True)
         raise ProcessingError(
             f"Could not open '{path.name}' as an Excel file (.xlsx) — {exc}. "
             "Please upload the original bank statement export in .csv, .xls, or .xlsx format."
@@ -1566,6 +1573,7 @@ def apply_bank_statement_to_reversal_file(
     try:
         wb = openpyxl.load_workbook(reversal_file_path)
     except Exception as exc:
+        logger.error("Could not open generated reversal file %s", reversal_file_path, exc_info=True)
         raise ProcessingError(f"Could not open the generated reversal file: {exc}") from exc
 
     stats = BankStatementCheckStats(statement_rows=index.total_rows)
@@ -2167,13 +2175,10 @@ def build_verification_bank_filename(bank_name: str, source_filename: str) -> st
 
 
 def _env_mail_connection_config() -> dict[str, Any]:
-    """The SMTP_*/.env account outright (see reversal_project/settings.py's
-    EMAIL_* block) — no core.models.MailServerConfig lookup at all. Used
-    directly (never per-user) for core.scheduler's system emails (dispute/
-    timeout alert, daily report): those aren't sent on anyone's behalf, so
-    they always go out through the one configured system mailbox rather
-    than picking up a "shared" MailServerConfig row someone happened to
-    leave active for their own per-user sends."""
+    """The single SMTP_*/.env account (see reversal_project/settings.py's
+    EMAIL_* block) — every outgoing email in this app goes out through
+    this one account (verification "Send mail", reconcile issue-note
+    "notify others" alert, and core.scheduler's system emails alike)."""
     from django.conf import settings  # lazy: services.py stays importable without Django set up
 
     return {
@@ -2187,71 +2192,15 @@ def _env_mail_connection_config() -> dict[str, Any]:
     }
 
 
-def resolve_mail_connection_config(user: Any) -> dict[str, Any]:
-    """Which SMTP account to actually send through for an email sent on
-    behalf of `user` — a verification "Send mail" or a reconcile
-    issue-note "notify others" alert, the two places an actual person is
-    doing the sending. The sending user's own active
-    core.models.MailServerConfig row wins if they have one, else a shared
-    user=None active row, else the SMTP_*/.env settings outright. Same
-    three-level fallback as resolve_mail_signature() just below, and for
-    the same reason: this app is meant to go live for more than one
-    department, each sending as their own mailbox, without everyone being
-    forced onto one shared SMTP_* .env account.
-
-    Blank Host/Username/Password/From-email on the row that wins falls
-    back to the matching SMTP_*/.env value field-by-field, not the whole
-    row at once, so a department can override just e.g. From email while
-    still using the shared password.
-
-    Not used for core.scheduler's system emails — those call
-    build_default_mail_connection() instead, which always goes straight to
-    the SMTP_*/.env account (see _env_mail_connection_config() above),
-    since there's no acting user to resolve a personal or department
-    mailbox for and picking up a "shared" MailServerConfig row here would
-    silently redirect system alerts too.
-
-    Returns a dict of connection kwargs (host/port/username/password/
-    use_tls/use_ssl) plus from_email — pass straight into
-    build_mail_connection() below rather than reading EMAIL_* off
-    `django.conf.settings` directly."""
-    from .models import MailServerConfig
-
-    env_defaults = _env_mail_connection_config()
-
-    def _resolved(row) -> dict[str, Any]:
-        use_tls = row.encryption == MailServerConfig.ENCRYPTION_TLS
-        use_ssl = row.encryption == MailServerConfig.ENCRYPTION_SSL
-        return {
-            "host": row.host or env_defaults["host"],
-            "port": row.port or env_defaults["port"],
-            "username": row.username or env_defaults["username"],
-            "password": row.password or env_defaults["password"],
-            "from_email": row.from_email or row.username or env_defaults["from_email"],
-            "use_tls": use_tls,
-            "use_ssl": use_ssl,
-        }
-
-    own_active = None
-    if getattr(user, "is_authenticated", False):
-        own_active = MailServerConfig.objects.filter(user=user, is_active=True).order_by("-updated_at").first()
-    if own_active is not None:
-        return _resolved(own_active)
-
-    shared_active = MailServerConfig.objects.filter(user__isnull=True, is_active=True).order_by("-updated_at").first()
-    if shared_active is not None:
-        return _resolved(shared_active)
-
-    return env_defaults
-
-
-def _connection_from_config(cfg: dict[str, Any]):
-    """(connection, from_email) from a resolved connection-config dict —
-    shared plumbing for build_mail_connection() and
-    build_default_mail_connection() below."""
+def build_default_mail_connection():
+    """(connection, from_email) for every outgoing email this app sends —
+    verification "Send mail", reconcile issue-note "notify others" alert,
+    and core.scheduler's system emails. Always the single SMTP_*/.env
+    account (see _env_mail_connection_config())."""
     from django.conf import settings
     from django.core.mail import get_connection
 
+    cfg = _env_mail_connection_config()
     connection = get_connection(
         backend="django.core.mail.backends.smtp.EmailBackend",
         host=cfg["host"],
@@ -2263,26 +2212,6 @@ def _connection_from_config(cfg: dict[str, Any]):
         timeout=getattr(settings, "EMAIL_TIMEOUT", 15),
     )
     return connection, cfg["from_email"]
-
-
-def build_mail_connection(user: Any):
-    """(connection, from_email) for sending one email as `user` — a
-    verification "Send mail" or a reconcile issue-note "notify others"
-    alert. Pass `connection=` and `from_email=` into EmailMultiAlternatives
-    so it actually goes out through `user`'s own resolved account instead
-    of Django's implicit settings.EMAIL_* connection, which is always the
-    SMTP_*/.env account regardless of who's sending."""
-    return _connection_from_config(resolve_mail_connection_config(user))
-
-
-def build_default_mail_connection():
-    """(connection, from_email) for a system email with no acting user —
-    core.scheduler's dispute/timeout alert and daily report. Always the
-    SMTP_*/.env account (see _env_mail_connection_config()); deliberately
-    does not consult core.models.MailServerConfig at all, so these system
-    alerts can't be redirected by someone else's per-user/department mail
-    setup on the "Mail settings" tab."""
-    return _connection_from_config(_env_mail_connection_config())
 
 
 def resolve_mail_signature(fallback_name: str = "", user: Any = None) -> dict[str, str]:

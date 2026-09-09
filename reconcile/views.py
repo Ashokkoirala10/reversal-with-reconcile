@@ -1,3 +1,4 @@
+import logging
 import tempfile
 import time
 import zipfile
@@ -27,7 +28,7 @@ from core.services import (
     MAIL_SIGNATURE_IMAGE_CID,
     ProcessingError,
     build_bank_statement_index,
-    build_mail_connection,
+    build_default_mail_connection,
     build_signature_blocks,
     normalize_reference_id,
     resolve_mail_signature,
@@ -38,6 +39,8 @@ from .engine import reconcile
 from .forms import ReconcileUploadForm
 from .models import ReconcileRun
 from .report import save_workbook
+
+logger = logging.getLogger(__name__)
 from .statements import StatementError, write_combined_statement_csv
 from .transactions import TransactionFileError, load_transactions
 
@@ -223,6 +226,14 @@ def reconcile_view(request):
 
                 source_desc = f"fetched from DB ({from_date} to {to_date})" if mode == "db_fetch" else "uploaded file"
                 log_action(request, f"Ran reconciliation {source_desc}: {txn_name} (#{run.id}, {run.total_transactions} txns)")
+                logger.info(
+                    "Ran reconciliation #%s (%s, %d txns) for user=%s in %dms",
+                    run.id, txn_name, run.total_transactions, run.uploaded_by, elapsed_ms,
+                    extra={
+                        "run_id": run.id, "filename": txn_name, "transactions": run.total_transactions,
+                        "user": run.uploaded_by, "duration_ms": elapsed_ms,
+                    },
+                )
                 return redirect(reverse("reconcile:result", args=[run.id]))
     else:
         form = ReconcileUploadForm()
@@ -357,7 +368,7 @@ def update_issue_view(request, run_id):
                 f"<p>{signature_html}</p>"
             )
             try:
-                connection, from_email = build_mail_connection(user=request.user)
+                connection, from_email = build_default_mail_connection()
                 email = EmailMultiAlternatives(
                     subject=subject, body=text_body, from_email=from_email,
                     to=valid_to, cc=valid_cc or None, connection=connection,
@@ -373,6 +384,10 @@ def update_issue_view(request, run_id):
                     email.attach(signature_image)
                 email.send(fail_silently=False)
             except Exception as exc:  # noqa: BLE001 - surface the SMTP error to the caller
+                logger.exception(
+                    "Issue-notification mail failed for reconcile run #%s", run.id,
+                    extra={"run_id": run.id, "user": request.user.username},
+                )
                 messages.error(request, f"Note saved, but sending the notification failed: {exc}")
             else:
                 run.issue_notified_at = timezone.now()

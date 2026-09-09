@@ -142,7 +142,7 @@ def check_dispute_timeouts() -> None:
         state.last_run_at = now
         state.last_result = f"Error: {exc}"
         state.save(update_fields=["last_run_at", "last_result"])
-        logger.warning("Dispute/timeout check failed: %s", exc)
+        logger.warning("Dispute/timeout check failed: %s", exc, extra={"job": "dispute_alert_check"})
         return
 
     timeouts = [r for r in rows if str(r.get("Overall Status") or "").strip().upper() == "TIMEOUT"]
@@ -240,7 +240,15 @@ def check_dispute_timeouts() -> None:
         )
     except Exception as exc:  # noqa: BLE001 - a bad SMTP config shouldn't kill the scheduler thread
         state.last_result = f"Email send failed: {exc}"
-        logger.exception("Dispute/timeout alert email failed")
+        logger.exception(
+            "Dispute/timeout alert email failed",
+            extra={"job": "dispute_alert_check", "new_timeouts": len(new_timeouts), "recipients": len(to_list)},
+        )
+    else:
+        logger.info(
+            "Dispute/timeout alert sent: %d new timeout(s) to %d recipient(s)", len(new_timeouts), len(to_list),
+            extra={"job": "dispute_alert_check", "new_timeouts": len(new_timeouts), "recipients": len(to_list)},
+        )
     state.save(update_fields=["last_checked_at", "last_run_at", "last_result"])
 
 
@@ -290,7 +298,7 @@ def send_daily_report() -> None:
         state.last_run_at = now
         state.last_result = f"Error: {exc}"
         state.save(update_fields=["last_run_at", "last_result"])
-        logger.warning("Daily report failed: %s", exc)
+        logger.warning("Daily report failed: %s", exc, extra={"job": "daily_report_job"})
         return
 
     report = compute_general_report(rows)
@@ -366,7 +374,12 @@ def send_daily_report() -> None:
         state.last_result = f"Sent to {len(to_list)} recipient(s)"
     except Exception as exc:  # noqa: BLE001 - a bad SMTP config shouldn't kill the scheduler thread
         state.last_result = f"Email send failed: {exc}"
-        logger.exception("Daily report email failed")
+        logger.exception("Daily report email failed", extra={"job": "daily_report_job", "recipients": len(to_list)})
+    else:
+        logger.info(
+            "Daily report sent to %d recipient(s) for %s", len(to_list), yesterday,
+            extra={"job": "daily_report_job", "recipients": len(to_list), "report_date": str(yesterday)},
+        )
     state.save(update_fields=["last_run_at", "last_result"])
 
 
