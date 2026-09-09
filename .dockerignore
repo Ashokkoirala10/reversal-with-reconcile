@@ -1,36 +1,65 @@
 # Version control
-.git
+.git/
 .gitignore
+.gitattributes
 
-# Python
+# Python bytecode & caches
 __pycache__/
 *.py[cod]
 *$py.class
-*.egg-info/
+*.so
+.Python
 
-# Local virtual environments (this repo has a couple checked in locally)
-venv/
+# Local virtual environments
 .venv/
+venv/
+ENV/
+env/
 reversa/
 reconc/
 
-# Django runtime state — generated at container build/run time instead,
-# or mounted in via docker-compose.yml's volumes
-db.sqlite3
+# Django runtime state & uploads (mounted via volumes or generated at build time)
+db.sqlite3*
 media/
 staticfiles/
 
-# Secrets — never bake these into an image layer; docker-compose.yml's
-# env_file: .env injects them at container runtime instead
-.env
-.env.bak
+# Secrets & environment files (injected at runtime via docker-compose or orchestrator)
+.env*
+!.env.example
 
-# IDE / OS
+# IDEs, editors & OS files
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 .DS_Store
 Thumbs.db
 
-# Misc
-*.log
+# Project documentation & repo metadata not needed in production container
+README.md
+TECHNICAL_DOCUMENTATION.md
 System_Features_Overview_Email.txt
+
+# Testing & CI artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Container & orchestration definitions
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+docker-compose*.yaml
+
+# Build & packaging artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Logs & temporary files
+*.log
+tmp/
+temp/
