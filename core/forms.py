@@ -5,7 +5,6 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 
 from .models import (
     BankAccount,
-    MailServerConfig,
     MailSignature,
     ProcessingLog,
     ScheduledReportRecipient,
@@ -324,38 +323,6 @@ class ScheduledReportRecipientForm(forms.ModelForm):
         for addr in addresses:
             validator.clean(addr)
         return ", ".join(addresses)
-
-
-class MailServerConfigForm(forms.ModelForm):
-    """Lets any logged-in user add/edit their own outgoing SMTP account
-    (core.models.MailServerConfig), from the "Extra" page's "Mail
-    signature" tab (top section, above the signature editor below it) —
-    `user` is set server-side to the logged-in user, same as
-    MailSignatureForm, so each person/department only ever manages their
-    own account. Password uses PasswordInput so Django never re-renders
-    the stored value into the page; leaving it blank on an edit keeps
-    whatever password is already saved (see update_mail_server_config_view)."""
-
-    class Meta:
-        model = MailServerConfig
-        fields = ["label", "host", "port", "username", "password", "from_email", "encryption", "is_active"]
-        labels = {
-            "label": "Label (optional)",
-            "host": "SMTP host",
-            "port": "Port",
-            "username": "Username",
-            "password": "Password",
-            "from_email": "From email (optional)",
-            "encryption": "Encryption",
-            "is_active": "Active",
-        }
-        widgets = {
-            "label": forms.TextInput(attrs={"placeholder": "e.g. Finance dept SMTP"}),
-            "host": forms.TextInput(attrs={"placeholder": "e.g. smtp.office365.com — leave blank to use the default"}),
-            "username": forms.TextInput(attrs={"placeholder": "e.g. jdoe@sct.com.np — leave blank to use the default"}),
-            "password": forms.PasswordInput(render_value=False, attrs={"placeholder": "leave blank to use the default"}),
-            "from_email": forms.TextInput(attrs={"placeholder": "leave blank to send as Username"}),
-        }
 
 
 class MailSignatureForm(forms.ModelForm):

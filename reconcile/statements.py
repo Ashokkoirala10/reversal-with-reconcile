@@ -23,11 +23,14 @@ shape is actually just delegated straight to core's own reader.
 from __future__ import annotations
 
 import csv
+import logging
 from pathlib import Path
 from typing import Any
 
 import openpyxl
 import pdfplumber
+
+logger = logging.getLogger(__name__)
 import xlrd
 
 from core.services import ProcessingError, _read_bank_statement_rows  # noqa: F401 (re-exported for convenience)
@@ -110,6 +113,7 @@ def _pdf_table_rows(path: Path) -> list[list] | None:
                     rows.extend(table)
             return rows or None
     except Exception:
+        logger.debug("Could not extract a table from PDF statement %s", path, exc_info=True)
         return None
 
 
@@ -156,6 +160,7 @@ def _load_excel_rows(path: Path) -> list[list] | None:
         try:
             wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
         except Exception:
+            logger.debug("Could not open %s as .xlsx/.xlsm", path, exc_info=True)
             return None
         try:
             ws = wb[wb.sheetnames[0]]
@@ -166,6 +171,7 @@ def _load_excel_rows(path: Path) -> list[list] | None:
         try:
             wb = xlrd.open_workbook(str(path))
         except Exception:
+            logger.debug("Could not open %s as .xls", path, exc_info=True)
             return None
         ws = wb.sheet_by_index(0)
         return [

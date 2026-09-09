@@ -32,16 +32,6 @@ urlpatterns = [
         name="update_mail_signature",
     ),
     path(
-        "bank-statement/verification-format/add-server-config/",
-        views.add_mail_server_config_view,
-        name="add_mail_server_config",
-    ),
-    path(
-        "bank-statement/verification-format/update-server-config/<int:config_id>/",
-        views.update_mail_server_config_view,
-        name="update_mail_server_config",
-    ),
-    path(
         "bank-statement/verification-format/send-mail/",
         views.verification_send_mail_view,
         name="verification_send_mail",

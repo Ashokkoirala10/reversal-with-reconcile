@@ -464,34 +464,21 @@ class MailSignature(models.Model):
 
 
 class MailServerConfig(models.Model):
-    """Which SMTP account an outgoing email (verification "Send mail",
-    reconcile issue-note "notify others" alert, or a scheduler system
-    alert) is actually sent through — per user, same self-service model
-    as MailSignature just above: each user/department keeps their own
-    account here instead of everyone sharing the single SMTP_* .env
-    account, so "goes live for other departments" doesn't mean they all
-    send as one person's mailbox. resolve_mail_connection() in
-    core/services.py picks it up by whichever user is actually sending.
+    """LEGACY / UNUSED: used to let each user/department configure their
+    own outgoing SMTP account instead of everyone sharing the single
+    SMTP_*/.env account. That self-service UI and the code resolving it
+    (the old resolve_mail_connection_config()/build_mail_connection() in
+    core/services.py) have been removed — every outgoing email (verification
+    "Send mail", reconcile issue-note "notify others" alert, and
+    core.scheduler's system emails) now always goes out through the single
+    SMTP_*/.env account via build_default_mail_connection(), regardless of
+    what's stored here. The model/table is kept only so any rows already
+    saved aren't silently deleted; nothing reads them any more.
 
-    `user` is nullable for the same reason as MailSignature.user: a
-    user=None active row is a shared/system account (used for a
-    system-triggered send with no acting user, e.g. core.scheduler's
-    background jobs, or as an org-wide fallback before finally reaching
-    the SMTP_*/.env settings). Resolution order in
-    resolve_mail_connection(): the sending user's own active row, else a
-    shared user=None active row, else the SMTP_*/.env defaults outright
-    — so nothing breaks for anyone who hasn't configured their own yet.
-
-    Blank Host/Username/From email/Password on a row fall back to the
-    matching SMTP_*/.env value field-by-field (not the whole row at
-    once) — same partial-override behaviour as MailSignature's
-    company/address/etc. When a user has more than one active row, the
-    most recently updated one wins, same as MailSignature.
-
-    Password is stored as entered (plaintext), matching how the SMTP_*
-    .env value it's replacing was already handled — this app has no
-    field-level encryption infrastructure. Treat DB access/backups
-    accordingly; don't broaden who can read this table."""
+    Password is stored encrypted at rest (see core/crypto.py's
+    EncryptedCharField), transparent to any Python code that still
+    touches this model directly (e.g. the Django admin, if ever
+    registered) — the DB column holds ciphertext, not plaintext."""
 
     ENCRYPTION_TLS = "tls"
     ENCRYPTION_SSL = "ssl"
